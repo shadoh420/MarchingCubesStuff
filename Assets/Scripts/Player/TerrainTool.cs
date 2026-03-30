@@ -98,7 +98,17 @@ public class TerrainTool : MonoBehaviour
         if (_attackHeld && HasHit && terrainManager != null)
         {
             float delta = CurrentMode == ToolMode.Dig ? editPower : -editPower;
-            terrainManager.EditTerrain(HitPoint, editRadius, delta * Time.deltaTime);
+            float scaledDelta = delta * Time.deltaTime;
+
+            // Route through NetworkTerrainSync for multiplayer
+            if (NetworkTerrainSync.Instance != null)
+            {
+                NetworkTerrainSync.Instance.RequestTerrainEditRpc(HitPoint, editRadius, scaledDelta);
+            }
+            else
+            {
+                terrainManager.EditTerrain(HitPoint, editRadius, scaledDelta);
+            }
         }
 
         UpdateIndicator();

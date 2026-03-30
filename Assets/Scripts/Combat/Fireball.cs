@@ -1,63 +1,48 @@
+using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
-/// Physics-driven fireball projectile.
+/// Server-authoritative fireball projectile.
 ///
-/// On spawn, flies forward at <see cref="Speed"/> with optional gravity.
-/// On collision with terrain: carves a crater via
-/// <see cref="TerrainManager.EditTerrain"/> and spawns explosion VFX.
-/// On collision with a player: deals damage (Phase 11 stub) and spawns
-/// explosion VFX.
+/// PHASE 12 CHANGES:
+///   - <c>NetworkBehaviour</c> with <c>NetworkObject</c> + <c>NetworkTransform</c>.
+///   - Rigidbody physics runs on the SERVER only (clients interpolate via NetworkTransform).
+///   - <c>OnCollisionEnter</c> runs SERVER-ONLY → terrain edit + damage + VFX broadcast.
+///   - VFX trail: each client instantiates locally in <see cref="OnNetworkSpawn"/>.
+///   - VFX explosion: server broadcasts position via ClientRpc, each client instantiates.
+///   - Destroy → <see cref="NetworkObject.Despawn"/> (server-only).
 ///
-/// VFX is handled by instantiating PyroParticles prefabs:
-///   - Trail/glow: a child instance of the fireball VFX prefab.
-///   - Explosion:  instantiated at the impact point on collision.
-///
-/// The shooter's collider is ignored to prevent self-hits at spawn.
-/// Self-splash damage is applied at 50% (Quake-style rocket jumping).
+/// Self-damage is reduced by <see cref="SelfDamageMultiplier"/> (Quake-style).
 /// </summary>
 [RequireComponent(typeof(Rigidbody), typeof(SphereCollider))]
-public class Fireball : MonoBehaviour
+public class Fireball : NetworkBehaviour
 {
     // ── Projectile settings ─────────────────────────────────────────
     [Header("Projectile")]
-    [Tooltip("Forward speed on spawn (m/s).")]
     public float Speed = 25f;
-
-    [Tooltip("Custom gravity applied each frame. Use (0, -5, 0) for a slight arc.")]
     public Vector3 Gravity = Vector3.zero;
-
-    [Tooltip("Seconds before the projectile auto-destructs if it hits nothing.")]
     public float Lifetime = 8f;
 
     // ── Terrain deformation ─────────────────────────────────────────
     [Header("Crater")]
-    [Tooltip("World-space radius of the crater carved on terrain impact.")]
     public float CraterRadius = 1.5f;
-
-    [Tooltip("Density delta applied to the terrain (positive = dig).")]
     public float CraterDelta = 30f;
 
-    // ── Damage (Phase 11 stub) ──────────────────────────────────────
+    // ── Damage ──────────────────────────────────────────────────────
     [Header("Damage")]
-    [Tooltip("Direct-hit damage dealt to a player.")]
     public float DirectDamage = 40f;
-
-    [Tooltip("Maximum splash damage at the center of the explosion.")]
     public float SplashDamage = 25f;
-
-    [Tooltip("Splash damage radius (world units).")]
     public float SplashRadius = 4f;
-
-    [Tooltip("Multiplier for self-inflicted splash damage (0.5 = Quake-style).")]
     public float SelfDamageMultiplier = 0.5f;
 
     // ── VFX ─────────────────────────────────────────────────────────
     [Header("VFX")]
-    [Tooltip("Prefab instantiated at the impact point (e.g., PyroParticles FireExplosion).")]
     public GameObject ExplosionPrefab;
 
-    // ── Runtime state (set by ProjectileLauncher on spawn) ───────────
+    [Tooltip("Trail VFX prefab (PyroParticles fire trail). Assign on the prefab so all clients have it.")]
+    public GameObject TrailVFXPrefab;
+
+    // ── Runtime state (set by ProjectileLauncher on server) ─────────
     [HideInInspector] public TerrainManager TerrainManager;
     [HideInInspector] public Collider ShooterCollider;
     [HideInInspector] public GameObject ShooterObject;
@@ -74,79 +59,92 @@ public class Fireball : MonoBehaviour
     private void Awake()
     {
         _rb = GetComponent<Rigidbody>();
-
-        // Physics config — we drive velocity manually via Gravity;
-        // Unity gravity is off so we have precise control.
         _rb.useGravity  = false;
         _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
     }
 
-    private void Start()
+    public override void OnNetworkSpawn()
     {
         _spawnTime = Time.time;
 
-        // Launch forward
-        _rb.linearVelocity = transform.forward * Speed;
-
-        // Ignore collision with the shooter so we don't explode at spawn
-        if (ShooterCollider != null)
+        if (IsServer)
         {
-            Physics.IgnoreCollision(GetComponent<Collider>(), ShooterCollider, true);
+            // Server drives physics
+            _rb.isKinematic = false;
+            _rb.linearVelocity = transform.forward * Speed;
+
+            // Ignore shooter collision
+            if (ShooterCollider != null)
+            {
+                Physics.IgnoreCollision(GetComponent<Collider>(), ShooterCollider, true);
+            }
+        }
+        else
+        {
+            // Clients: disable physics (NetworkTransform handles position)
+            _rb.isKinematic = true;
+        }
+
+        // All clients: attach trail VFX locally
+        if (TrailVFXPrefab != null)
+        {
+            GameObject vfx = Instantiate(TrailVFXPrefab, transform.position, transform.rotation);
+            vfx.transform.SetParent(transform, true);
+            DisablePyroPhysics(vfx);
         }
     }
 
     private void FixedUpdate()
     {
-        // Apply custom gravity
+        // Only server runs physics
+        if (!IsServer) return;
+
         _rb.linearVelocity += Gravity * Time.fixedDeltaTime;
 
-        // Lifetime expiry
         if (Time.time - _spawnTime >= Lifetime)
         {
-            DestroyProjectile();
+            DespawnProjectile();
         }
     }
 
     // =================================================================
-    //  Collision
+    //  Collision — Server only
     // =================================================================
 
     private void OnCollisionEnter(Collision collision)
     {
-        if (_hasCollided) return;
+        if (!IsServer || _hasCollided) return;
         _hasCollided = true;
 
         Vector3 impactPoint = collision.contactCount > 0
             ? collision.GetContact(0).point
             : transform.position;
 
-        // ── Terrain deformation ──────────────────────────────────────
-        if (TerrainManager != null)
+        // ── Terrain deformation (via NetworkTerrainSync) ─────────────
+        if (NetworkTerrainSync.Instance != null)
         {
+            NetworkTerrainSync.Instance.ApplyTerrainEdit(impactPoint, CraterRadius, CraterDelta);
+        }
+        else if (TerrainManager != null)
+        {
+            // Fallback: apply locally only (non-networked)
             TerrainManager.EditTerrain(impactPoint, CraterRadius, CraterDelta);
         }
 
-        // ── Splash damage (Phase 11 ready) ───────────────────────────
+        // ── Splash damage (server-side) ──────────────────────────────
         ApplySplashDamage(impactPoint);
 
-        // ── Explosion VFX ────────────────────────────────────────────
-        SpawnExplosion(impactPoint);
+        // ── Explosion VFX (broadcast to all clients) ─────────────────
+        SpawnExplosionRpc(impactPoint);
 
-        // ── Destroy projectile ───────────────────────────────────────
-        DestroyProjectile();
+        // ── Despawn projectile ───────────────────────────────────────
+        DespawnProjectile();
     }
 
     // =================================================================
-    //  Damage helpers
+    //  Damage — Server-only
     // =================================================================
 
-    /// <summary>
-    /// Finds all colliders within splash radius and applies damage
-    /// with distance falloff via <see cref="PlayerHealth.TakeDamage"/>.
-    /// Self-damage is reduced by <see cref="SelfDamageMultiplier"/>.
-    /// Direct hits (the collider we actually collided with) receive
-    /// <see cref="DirectDamage"/> instead of splash damage.
-    /// </summary>
     private void ApplySplashDamage(Vector3 center)
     {
         Collider[] hits = Physics.OverlapSphere(center, SplashRadius);
@@ -175,29 +173,75 @@ public class Fireball : MonoBehaviour
     }
 
     // =================================================================
-    //  VFX helpers
+    //  VFX — broadcast to all clients
     // =================================================================
 
-    /// <summary>
-    /// Instantiates the explosion VFX prefab at the impact point.
-    /// The prefab is expected to self-destruct via PyroParticles'
-    /// FireBaseScript cleanup coroutine.
-    /// </summary>
-    private void SpawnExplosion(Vector3 position)
+    [Rpc(SendTo.Everyone)]
+    private void SpawnExplosionRpc(Vector3 position)
     {
         if (ExplosionPrefab == null) return;
 
         GameObject explosion = Instantiate(ExplosionPrefab, position, Quaternion.identity);
 
-        // PyroParticles handles its own cleanup, but add a safety net
+        // Make all explosion audio sources 3D so volume falls off with distance
+        foreach (AudioSource src in explosion.GetComponentsInChildren<AudioSource>(true))
+        {
+            src.spatialBlend = 1f;
+            src.rolloffMode  = AudioRolloffMode.Logarithmic;
+            src.minDistance   = 5f;
+            src.maxDistance   = 100f;
+        }
+
         Destroy(explosion, 6f);
     }
 
-    /// <summary>
-    /// Destroys the projectile GameObject immediately.
-    /// </summary>
-    private void DestroyProjectile()
+    // =================================================================
+    //  Cleanup
+    // =================================================================
+
+    private void DespawnProjectile()
     {
-        Destroy(gameObject);
+        if (!IsServer) return;
+
+        var netObj = GetComponent<NetworkObject>();
+        if (netObj != null && netObj.IsSpawned)
+        {
+            netObj.Despawn();
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+    }
+
+    // =================================================================
+    //  Helpers
+    // =================================================================
+
+    private void DisablePyroPhysics(GameObject vfxRoot)
+    {
+        foreach (Rigidbody rb in vfxRoot.GetComponentsInChildren<Rigidbody>(true))
+        {
+            if (!rb.isKinematic)
+            {
+                rb.linearVelocity = Vector3.zero;
+                rb.isKinematic = true;
+            }
+        }
+
+        foreach (Collider col in vfxRoot.GetComponentsInChildren<Collider>(true))
+        {
+            col.enabled = false;
+        }
+
+        foreach (var script in vfxRoot.GetComponentsInChildren<DigitalRuby.PyroParticles.FireProjectileScript>(true))
+        {
+            script.enabled = false;
+        }
+
+        foreach (var fwd in vfxRoot.GetComponentsInChildren<DigitalRuby.PyroParticles.FireCollisionForwardScript>(true))
+        {
+            fwd.enabled = false;
+        }
     }
 }

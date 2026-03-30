@@ -1,26 +1,24 @@
+using Unity.Netcode;
 using UnityEngine;
 using System;
 
 /// <summary>
-/// Player health component. Tracks HP, handles damage, death, and respawn.
+/// Server-authoritative player health component.
 ///
-/// Placed on the same GameObject as <see cref="PlayerCharacterController"/>.
-/// Splash damage from <see cref="Fireball"/> calls <see cref="TakeDamage"/>.
+/// HP is stored as a <see cref="NetworkVariable{T}"/> (server-write, everyone-read).
+/// Damage is applied server-side only. Death and respawn are server-driven
+/// with <c>ClientRpc</c> broadcasts for visual/audio effects.
 ///
-/// Death disables the character motor and camera, waits for
-/// <see cref="RespawnDelay"/>, then respawns on the terrain surface
-/// using the same logic as <see cref="PlayerSpawnManager"/>.
+/// Local C# events (<see cref="OnDamaged"/>, <see cref="OnDied"/>,
+/// <see cref="OnRespawned"/>) still fire on every client for HUD updates,
+/// driven by the NetworkVariable's <c>OnValueChanged</c> callback.
 /// </summary>
-public class PlayerHealth : MonoBehaviour
+public class PlayerHealth : NetworkBehaviour
 {
     // ── Health settings ─────────────────────────────────────────────
     [Header("Health")]
     [Tooltip("Maximum hit points.")]
     public float MaxHP = 100f;
-
-    [Tooltip("Current hit points (readonly in Inspector for debugging).")]
-    [SerializeField]
-    private float _currentHP;
 
     // ── Respawn settings ────────────────────────────────────────────
     [Header("Respawn")]
@@ -33,25 +31,22 @@ public class PlayerHealth : MonoBehaviour
     [Tooltip("Extra height above the surface to place the respawned player.")]
     public float RespawnHeightOffset = 2f;
 
-    // ── References (wired by PlayerSpawnManager) ─────────────────────
+    // ── References (wired by NetworkPlayerSetup) ─────────────────────
     [Header("References")]
-    [Tooltip("The KCC character controller.")]
     public PlayerCharacterController Character;
-
-    [Tooltip("The first-person camera.")]
     public FirstPersonCamera Camera;
-
-    [Tooltip("TerrainManager for surface finding on respawn.")]
     public TerrainManager TerrainManager;
-
-    [Tooltip("The projectile launcher (disabled during death).")]
     public ProjectileLauncher Launcher;
-
-    [Tooltip("Player visuals component (hidden during death).")]
     public PlayerVisuals Visuals;
 
-    // ── Events ──────────────────────────────────────────────────────
-    /// <summary>Fired when damage is taken. Args: current HP, max HP.</summary>
+    // ── Networked HP ────────────────────────────────────────────────
+    private NetworkVariable<float> _networkHP = new NetworkVariable<float>(
+        100f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server);
+
+    // ── Events (fire on ALL clients for HUD updates) ────────────────
+    /// <summary>Fired when HP changes. Args: current HP, max HP.</summary>
     public event Action<float, float> OnDamaged;
 
     /// <summary>Fired on death.</summary>
@@ -61,140 +56,205 @@ public class PlayerHealth : MonoBehaviour
     public event Action<float, float> OnRespawned;
 
     // ── Public state ────────────────────────────────────────────────
-    /// <summary>Current HP (readonly).</summary>
-    public float CurrentHP => _currentHP;
+    /// <summary>Current HP (from NetworkVariable).</summary>
+    public float CurrentHP => _networkHP.Value;
 
     /// <summary>True when the player is alive.</summary>
-    public bool IsAlive => _currentHP > 0f;
+    public bool IsAlive => _networkHP.Value > 0f;
 
     /// <summary>Normalized health (0–1) for HUD display.</summary>
-    public float HealthPercent => MaxHP > 0f ? Mathf.Clamp01(_currentHP / MaxHP) : 0f;
+    public float HealthPercent => MaxHP > 0f ? Mathf.Clamp01(_networkHP.Value / MaxHP) : 0f;
 
     // ── Internals ───────────────────────────────────────────────────
     private bool _isDead;
 
     // =================================================================
-    //  Lifecycle
+    //  Network Lifecycle
     // =================================================================
 
-    private void Awake()
+    public override void OnNetworkSpawn()
     {
-        _currentHP = MaxHP;
+        _networkHP.OnValueChanged += OnHPChanged;
+
+        if (IsServer)
+        {
+            _networkHP.Value = MaxHP;
+        }
+
+        // Initial HUD refresh
+        OnDamaged?.Invoke(_networkHP.Value, MaxHP);
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        _networkHP.OnValueChanged -= OnHPChanged;
     }
 
     // =================================================================
-    //  Public API
+    //  NetworkVariable callback (fires on ALL clients)
+    // =================================================================
+
+    private void OnHPChanged(float oldVal, float newVal)
+    {
+        OnDamaged?.Invoke(newVal, MaxHP);
+
+        if (newVal <= 0f && oldVal > 0f)
+        {
+            OnDied?.Invoke();
+        }
+    }
+
+    // =================================================================
+    //  Public API — Server-only
     // =================================================================
 
     /// <summary>
-    /// Applies damage to the player. Clamps HP to zero and triggers
-    /// death if HP reaches zero.
+    /// Applies damage. SERVER-ONLY — called directly by Fireball collision
+    /// on the server. Clients cannot call this.
     /// </summary>
-    /// <param name="amount">Positive damage amount.</param>
     public void TakeDamage(float amount)
     {
-        if (_isDead || amount <= 0f) return;
+        if (!IsServer || _isDead || amount <= 0f) return;
 
-        _currentHP = Mathf.Max(0f, _currentHP - amount);
-        OnDamaged?.Invoke(_currentHP, MaxHP);
+        _networkHP.Value = Mathf.Max(0f, _networkHP.Value - amount);
 
-        Debug.Log($"[PlayerHealth] Took {amount:F1} damage. HP: {_currentHP:F1}/{MaxHP}");
+        Debug.Log($"[PlayerHealth] Player {OwnerClientId} took {amount:F1} damage. " +
+                  $"HP: {_networkHP.Value:F1}/{MaxHP}");
 
-        if (_currentHP <= 0f)
+        if (_networkHP.Value <= 0f)
         {
             Die();
         }
     }
 
     /// <summary>
-    /// Restores HP by the specified amount, clamped to MaxHP.
+    /// Restores HP. SERVER-ONLY.
     /// </summary>
     public void Heal(float amount)
     {
-        if (_isDead || amount <= 0f) return;
-
-        _currentHP = Mathf.Min(MaxHP, _currentHP + amount);
-        OnDamaged?.Invoke(_currentHP, MaxHP);
+        if (!IsServer || _isDead || amount <= 0f) return;
+        _networkHP.Value = Mathf.Min(MaxHP, _networkHP.Value + amount);
     }
 
-    /// <summary>
-    /// Fully restores HP to MaxHP.
-    /// </summary>
+    /// <summary>Fully restores HP. SERVER-ONLY.</summary>
     public void FullHeal()
     {
-        _currentHP = MaxHP;
-        OnDamaged?.Invoke(_currentHP, MaxHP);
+        if (!IsServer) return;
+        _networkHP.Value = MaxHP;
     }
 
     // =================================================================
-    //  Death & Respawn
+    //  Death & Respawn — Server-authoritative
     // =================================================================
 
-    /// <summary>
-    /// Handles player death: disables movement, camera input, and weapon.
-    /// Starts the respawn timer.
-    /// </summary>
     private void Die()
     {
-        if (_isDead) return;
+        if (!IsServer || _isDead) return;
         _isDead = true;
 
-        Debug.Log("[PlayerHealth] Player died!");
-        OnDied?.Invoke();
+        Debug.Log($"[PlayerHealth] Player {OwnerClientId} died!");
 
-        // Disable gameplay systems
+        // Server: disable KCC motor
         if (Character != null && Character.Motor != null)
             Character.Motor.enabled = false;
+
+        // All clients: visual/audio death effects
+        DieClientRpc();
+
+        // Schedule respawn on server
+        Invoke(nameof(ServerRespawn), RespawnDelay);
+    }
+
+    [Rpc(SendTo.Everyone)]
+    private void DieClientRpc()
+    {
+        // Called on ALL clients (including host)
+        OnDied?.Invoke();
 
         if (Launcher != null)
             Launcher.enabled = false;
 
         if (Visuals != null)
             Visuals.SetVisible(false);
-
-        // Start respawn timer
-        Invoke(nameof(Respawn), RespawnDelay);
     }
 
-    /// <summary>
-    /// Respawns the player on the terrain surface, restores HP,
-    /// and re-enables all gameplay systems.
-    /// </summary>
-    private void Respawn()
+    private void ServerRespawn()
     {
-        _isDead = false;
-        _currentHP = MaxHP;
+        if (!IsServer) return;
 
-        // Find a spawn position on the terrain surface
+        _isDead = false;
+
+        // Find a terrain surface position
         Vector3 spawnPos = FindSpawnPosition();
 
-        // Teleport the character
+        // Server: re-enable KCC motor and teleport
         if (Character != null && Character.Motor != null)
         {
             Character.Motor.enabled = true;
             Character.Motor.SetPositionAndRotation(spawnPos, Quaternion.identity);
         }
 
-        // Re-enable weapon
+        // Restore HP (triggers OnValueChanged → HUD update)
+        _networkHP.Value = MaxHP;
+
+        // All clients: re-enable systems
+        RespawnClientRpc();
+    }
+
+    [Rpc(SendTo.Everyone)]
+    private void RespawnClientRpc()
+    {
         if (Launcher != null)
             Launcher.enabled = true;
 
-        // Re-show mesh
         if (Visuals != null)
-            Visuals.SetVisible(!Visuals.HideForLocalPlayer);
+        {
+            // Owner: stay hidden (first-person). Remote: show capsule.
+            bool isLocalPlayer = IsOwner;
+            Visuals.SetVisible(!isLocalPlayer);
+        }
 
-        Debug.Log($"[PlayerHealth] Respawned at {spawnPos}");
-        OnRespawned?.Invoke(_currentHP, MaxHP);
+        OnRespawned?.Invoke(_networkHP.Value, MaxHP);
+    }
+
+    // =================================================================
+    //  Manual respawn (requested by client via pause menu)
+    // =================================================================
+
+    /// <summary>
+    /// Client requests a voluntary respawn (e.g. fell into a hole).
+    /// Server teleports the player to a safe spawn position.
+    /// </summary>
+    [Rpc(SendTo.Server)]
+    public void RequestRespawnServerRpc()
+    {
+        if (_isDead) return; // already dead, auto-respawn will handle it
+
+        Vector3 spawnPos = FindSafeSpawnPosition();
+
+        if (Character != null && Character.Motor != null)
+            Character.Motor.SetPositionAndRotation(spawnPos, Quaternion.identity);
+
+        Debug.Log($"[PlayerHealth] Player {OwnerClientId} manual respawn to {spawnPos}");
+    }
+
+    // =================================================================
+    //  Helpers
+    // =================================================================
+
+    private Vector3 FindSpawnPosition()
+    {
+        return FindSafeSpawnPosition();
     }
 
     /// <summary>
-    /// Finds a suitable respawn position by raycasting down from high
-    /// altitude at the current XZ position. Falls back to a default
-    /// height if no surface is found.
+    /// Tries to find valid ground. First tries the player's current XZ,
+    /// then falls back to the world spawn point (0,0) if no ground is
+    /// found (e.g. the player fell into a bottomless hole).
     /// </summary>
-    private Vector3 FindSpawnPosition()
+    private Vector3 FindSafeSpawnPosition()
     {
-        // Use current XZ or a random offset for variety
+        // Try current XZ first
         Vector3 currentPos = transform.position;
         Vector3 rayOrigin = new Vector3(currentPos.x, RespawnRaycastY, currentPos.z);
 
@@ -203,8 +263,21 @@ public class PlayerHealth : MonoBehaviour
             return hit.point + Vector3.up * RespawnHeightOffset;
         }
 
-        // Fallback
+        // Current position has no ground — try the world spawn point
+        var gameManager = FindFirstObjectByType<NetworkGameManager>();
+        if (gameManager != null)
+        {
+            Vector3 spawnOrigin = new Vector3(
+                gameManager.SpawnXZ.x, RespawnRaycastY, gameManager.SpawnXZ.y);
+
+            if (Physics.Raycast(spawnOrigin, Vector3.down, out RaycastHit spawnHit, RespawnRaycastY * 2f))
+            {
+                return spawnHit.point + Vector3.up * RespawnHeightOffset;
+            }
+        }
+
+        // Last resort fallback
         float surfaceY = TerrainManager != null ? TerrainManager.surfaceY + 5f : 20f;
-        return new Vector3(currentPos.x, surfaceY, currentPos.z);
+        return new Vector3(0f, surfaceY, 0f);
     }
 }

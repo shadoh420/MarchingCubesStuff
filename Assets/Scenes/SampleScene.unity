@@ -401,7 +401,7 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
---- !u!1 &975876989
+--- !u!1 &1676340598
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -409,266 +409,71 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 975876991}
-  - component: {fileID: 975876993}
-  - component: {fileID: 975876992}
-  - component: {fileID: 975876990}
-  - component: {fileID: 975876995}
-  - component: {fileID: 975876994}
-  - component: {fileID: 975876997}
-  - component: {fileID: 975876996}
+  - component: {fileID: 1676340600}
+  - component: {fileID: 1676340599}
+  - component: {fileID: 1676340601}
   m_Layer: 0
-  m_Name: Player
-  m_TagString: Player
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &975876990
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 549de911e16195d4397ae2b648a49ed1, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PlayerCharacterController
-  Motor: {fileID: 0}
-  CameraFollowPoint: {fileID: 1333794544}
-  WalkSpeed: 6
-  SprintSpeed: 10
-  StableMovementSharpness: 15
-  MaxAirMoveSpeed: 6
-  AirAccelerationSpeed: 15
-  Drag: 0.1
-  JumpUpSpeed: 10
-  JumpScalableForwardSpeed: 2
-  JumpPostGroundingGraceTime: 0.1
-  JumpPreGroundingGraceTime: 0.1
-  AllowJumpingWhenSliding: 0
-  CrouchedCapsuleHeight: 1
-  CrouchSpeed: 4
-  StandingCapsuleRadius: 0.5
-  StandingCapsuleHeight: 2
-  StandingCapsuleYOffset: 1
-  Gravity: {x: 0, y: -30, z: 0}
---- !u!4 &975876991
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children:
-  - {fileID: 1333794544}
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &975876992
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 4d1bc5515e3ab954e80599c538834774, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::KinematicCharacterController.KinematicCharacterMotor
-  Capsule: {fileID: 975876993}
-  CapsuleRadius: 0.5
-  CapsuleHeight: 2
-  CapsuleYOffset: 1
-  CapsulePhysicsMaterial: {fileID: 0}
-  GroundDetectionExtraDistance: 0
-  MaxStableSlopeAngle: 60
-  StableGroundLayers:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  DiscreteCollisionEvents: 0
-  StepHandling: 1
-  MaxStepHeight: 0.5
-  AllowSteppingWithoutStableGrounding: 0
-  MinRequiredStepDepth: 0.1
-  LedgeAndDenivelationHandling: 1
-  MaxStableDistanceFromLedge: 0.5
-  MaxVelocityForLedgeSnap: 0
-  MaxStableDenivelationAngle: 180
-  InteractiveRigidbodyHandling: 1
-  RigidbodyInteractionType: 0
-  SimulatedCharacterMass: 1
-  PreserveAttachedRigidbodyMomentum: 1
-  HasPlanarConstraint: 0
-  PlanarConstraintAxis: {x: 0, y: 0, z: 1}
-  MaxMovementIterations: 5
-  MaxDecollisionIterations: 1
-  CheckMovementInitialOverlaps: 1
-  KillVelocityWhenExceedMaxMovementIterations: 1
-  KillRemainingMovementWhenExceedMaxMovementIterations: 1
---- !u!136 &975876993
-CapsuleCollider:
-  m_ObjectHideFlags: 8
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 2
-  m_Radius: 0.5
-  m_Height: 2
-  m_Direction: 1
-  m_Center: {x: 0, y: 1, z: 0}
---- !u!114 &975876994
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bebbaf44fd2d68848a4acc4115b6a23d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::TerrainToolHUD
-  tool: {fileID: 0}
-  armLength: 10
-  armThickness: 2
-  gap: 4
-  crosshairColor: {r: 1, g: 1, b: 1, a: 0.85}
-  fontSize: 16
-  digColor: {r: 1, g: 0.45, b: 0.45, a: 1}
-  buildColor: {r: 0.45, g: 0.7, b: 1, a: 1}
---- !u!114 &975876995
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 39b228bf7ad1ba9428d4555faab12fee, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::TerrainTool
-  terrainManager: {fileID: 0}
-  cameraTransform: {fileID: 0}
-  editRadius: 2.5
-  editPower: 15
-  maxRayDistance: 100
-  indicatorColorDig: {r: 1, g: 0.3, b: 0.3, a: 0.25}
-  indicatorColorBuild: {r: 0.3, g: 0.6, b: 1, a: 0.25}
---- !u!114 &975876996
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e8ebf285164294945a7be326dad52f02, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::CombatHUD
-  launcher: {fileID: 0}
-  armLength: 12
-  armThickness: 2
-  gap: 5
-  crosshairReady: {r: 1, g: 1, b: 1, a: 0.9}
-  crosshairCooldown: {r: 1, g: 0.4, b: 0.2, a: 0.4}
---- !u!114 &975876997
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 975876989}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 7bf3137eac64de04ca7656ff502a0eef, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ProjectileLauncher
-  terrainManager: {fileID: 0}
-  cameraTransform: {fileID: 0}
-  playerObject: {fileID: 0}
-  playerCollider: {fileID: 0}
-  FireballPrefab: {fileID: 0}
-  FireballVFXPrefab: {fileID: 121802, guid: 8f18e1d8c46c51f429429815455062fc, type: 3}
-  ExplosionVFXPrefab: {fileID: 131164, guid: 3c5f4e32698bdb04eaed647f60310510, type: 3}
-  Cooldown: 0.5
-  SpawnOffset: 1.5
-  SpeedOverride: 25
-  GravityOverride: {x: 0, y: -5, z: 0}
-  CraterRadius: 3
-  CraterDelta: 30
---- !u!1 &1145219492
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1145219494}
-  - component: {fileID: 1145219493}
-  m_Layer: 0
-  m_Name: PlayerInputManager
+  m_Name: TerrainSync
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1145219493
+--- !u!114 &1676340599
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1145219492}
+  m_GameObject: {fileID: 1676340598}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: c6a5dd522f77ee04baa42116337ba336, type: 3}
+  m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::PlayerInputManager
-  Character: {fileID: 975876990}
-  Camera: {fileID: 330585548}
-  Tool: {fileID: 0}
-  Launcher: {fileID: 0}
-  InputActions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
-  PauseKey: 60
---- !u!4 &1145219494
+  m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkObject
+  GlobalObjectIdHash: 3175963177
+  InScenePlacedSourceGlobalObjectIdHash: 0
+  DeferredDespawnTick: 0
+  Ownership: 1
+  AlwaysReplicateAsRoot: 0
+  SynchronizeTransform: 1
+  ActiveSceneSynchronization: 0
+  SceneMigrationSynchronization: 0
+  SpawnWithObservers: 1
+  DontDestroyWithOwner: 0
+  AutoObjectParentSync: 1
+  SyncOwnerTransformWhenParented: 1
+  AllowOwnerToParent: 0
+--- !u!4 &1676340600
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1145219492}
+  m_GameObject: {fileID: 1676340598}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -3.60987, y: 8.08875, z: -16.03067}
+  m_LocalPosition: {x: -9.11673, y: -0, z: 5.17667}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1333794543
+--- !u!114 &1676340601
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1676340598}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fc0f8144ee0f6aa439acdea492b857c9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::NetworkTerrainSync
+  ShowTopMostFoldoutHeaderGroup: 1
+  terrainManager: {fileID: 1847656069}
+--- !u!1 &1712216032
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -676,28 +481,122 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 1333794544}
+  - component: {fileID: 1712216036}
+  - component: {fileID: 1712216035}
+  - component: {fileID: 1712216034}
+  - component: {fileID: 1712216033}
   m_Layer: 0
-  m_Name: CameraFollowPoint
+  m_Name: NetworkBootstrap
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &1333794544
+--- !u!114 &1712216033
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1712216032}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 02b85a7cb218897498f1ef858da0c306, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::NetworkGameManager
+  PlayerPrefab: {fileID: 1776519489343368730, guid: 3002004c2663f7d47a2e7fd1abb09c00, type: 3}
+  TerrainManager: {fileID: 1847656069}
+  SpawnXZ: {x: 0, y: 0}
+  RaycastStartY: 200
+  RaycastMaxDistance: 400
+  SpawnHeightOffset: 2
+  SpawnChunkColumnHeight: 3
+  Port: 7777
+--- !u!114 &1712216034
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1712216032}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6960e84d07fb87f47956e7a81d71c4e6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.Transports.UTP.UnityTransport
+  m_ProtocolType: 0
+  m_UseWebSockets: 0
+  m_UseEncryption: 0
+  m_MaxPacketQueueSize: 128
+  m_MaxPayloadSize: 6144
+  m_HeartbeatTimeoutMS: 500
+  m_ConnectTimeoutMS: 1000
+  m_MaxConnectAttempts: 60
+  m_DisconnectTimeoutMS: 30000
+  ConnectionData:
+    Address: 127.0.0.1
+    Port: 7777
+    ServerListenAddress: 127.0.0.1
+  DebugSimulator:
+    PacketDelayMS: 0
+    PacketJitterMS: 0
+    PacketDropRate: 0
+--- !u!114 &1712216035
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1712216032}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 593a2fe42fa9d37498c96f9a383b6521, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkManager
+  NetworkManagerExpanded: 0
+  NetworkConfig:
+    ProtocolVersion: 0
+    NetworkTransport: {fileID: 1712216034}
+    PlayerPrefab: {fileID: 0}
+    Prefabs:
+      NetworkPrefabsLists:
+      - {fileID: 11400000, guid: f78d35de48199b244af35b8d3cc13433, type: 2}
+    TickRate: 30
+    ClientConnectionBufferTimeout: 10
+    ConnectionApproval: 0
+    ConnectionData: 
+    EnableTimeResync: 0
+    TimeResyncInterval: 30
+    EnsureNetworkVariableLengthSafety: 0
+    EnableSceneManagement: 1
+    ForceSamePrefabs: 1
+    RecycleNetworkIds: 1
+    NetworkIdRecycleDelay: 120
+    RpcHashSize: 0
+    LoadSceneTimeOut: 120
+    SpawnTimeout: 10
+    EnableNetworkLogs: 1
+    NetworkTopology: 0
+    UseCMBService: 0
+    AutoSpawnPlayerPrefabClientSide: 1
+    NetworkProfilingMetrics: 1
+    OldPrefabList: []
+  RunInBackground: 1
+  LogLevel: 1
+--- !u!4 &1712216036
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1333794543}
+  m_GameObject: {fileID: 1712216032}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1.6, z: 0}
+  m_LocalPosition: {x: 0.58911, y: -0, z: 2.28487}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 975876991}
+  m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1847656066
 GameObject:
@@ -808,19 +707,23 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerSpawnManager
   TerrainManager: {fileID: 1847656069}
-  Character: {fileID: 975876990}
+  Character: {fileID: 0}
   Camera: {fileID: 330585548}
-  InputManager: {fileID: 1145219493}
-  Tool: {fileID: 975876995}
-  HUD: {fileID: 975876994}
-  Launcher: {fileID: 975876997}
-  CombatHudComponent: {fileID: 975876996}
+  InputManager: {fileID: 0}
+  Tool: {fileID: 0}
+  HUD: {fileID: 0}
+  Launcher: {fileID: 0}
+  CombatHudComponent: {fileID: 0}
+  Health: {fileID: 0}
+  Visuals: {fileID: 0}
+  HealthHudComponent: {fileID: 0}
   AdminToolsEnabled: 0
   SpawnXZ: {x: 0, y: 0}
   RaycastStartY: 200
   RaycastMaxDistance: 400
   SpawnHeightOffset: 2
   SpawnChunkColumnHeight: 3
+  SinglePlayerMode: 0
 --- !u!4 &2082363927
 Transform:
   m_ObjectHideFlags: 0
@@ -843,6 +746,6 @@ SceneRoots:
   - {fileID: 330585546}
   - {fileID: 410087041}
   - {fileID: 1847656068}
-  - {fileID: 975876991}
-  - {fileID: 1145219494}
   - {fileID: 2082363927}
+  - {fileID: 1712216036}
+  - {fileID: 1676340600}

@@ -453,6 +453,15 @@ public class TerrainManager : MonoBehaviour
     // =================================================================
 
     /// <summary>
+    /// Sets the player transform that terrain loading follows.
+    /// Called by <see cref="NetworkPlayerSetup"/> when the local player spawns.
+    /// </summary>
+    public void SetPlayerTransform(Transform t)
+    {
+        player = t;
+    }
+
+    /// <summary>
     /// Returns the chunk at the given grid coordinate, or null.
     /// </summary>
     public TerrainChunk GetChunk(Vector3Int coord)

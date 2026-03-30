@@ -15,7 +15,7 @@ public class PlayerVisuals : MonoBehaviour
     // ── Settings ─────────────────────────────────────────────────────
     [Header("Visuals")]
     [Tooltip("Colour of the player capsule.")]
-    public Color PlayerColor = new Color(0.3f, 0.6f, 1f, 1f);
+    public Color PlayerColor = new Color(0.9f, 0.55f, 0.2f, 1f);
 
     [Tooltip("If true, the mesh is hidden for the local player (first-person). " +
              "Set to false if you want to see yourself for debugging.")]
@@ -30,17 +30,13 @@ public class PlayerVisuals : MonoBehaviour
     //  Lifecycle
     // =================================================================
 
-    private void Start()
+    private void Awake()
     {
+        // Create the mesh in Awake so it exists before OnNetworkSpawn()
+        // calls SetVisible(). Start hidden — NetworkPlayerSetup controls
+        // visibility via SetVisible() based on IsOwner/IsServer.
         CreateVisualMesh();
-
-        if (HideForLocalPlayer)
-        {
-            // In single-player / local mode, hide the mesh.
-            // Phase 12 (netcode) will set HideForLocalPlayer = false
-            // for remote players so they're visible.
-            SetVisible(false);
-        }
+        SetVisible(false);
     }
 
     private void OnDestroy()

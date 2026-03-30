@@ -6,11 +6,13 @@ using UnityEngine.InputSystem;
 /// first-person camera. Reads the "Player" action map from the project's
 /// InputSystem_Actions asset.
 ///
-/// Responsibilities:
-///   - Polls Move, Look, Sprint, Jump, Crouch actions each frame.
-///   - Feeds <see cref="PlayerCharacterController.SetInputs"/> in Update.
-///   - Feeds <see cref="FirstPersonCamera.UpdateWithInput"/> in LateUpdate.
-///   - Manages cursor lock state (locked during play, freed on Escape).
+/// PHASE 12 CHANGES:
+///   - Exposes latched input state via public properties so
+///     <see cref="NetworkPlayerController"/> can read and send it to the server.
+///   - No longer calls <see cref="PlayerCharacterController.SetInputs"/>
+///     directly — the server does that via NetworkPlayerController.
+///   - Camera input (LateUpdate) is still local-only (owner camera).
+///   - Cursor management is still local.
 /// </summary>
 public class PlayerInputManager : MonoBehaviour
 {
@@ -46,15 +48,64 @@ public class PlayerInputManager : MonoBehaviour
     /// <summary>True when the cursor is locked for gameplay.</summary>
     public bool IsCursorLocked => _cursorLocked;
 
+    // ── Latched input state (read by NetworkPlayerController) ────────
+    /// <summary>Raw move input (x = right, y = forward).</summary>
+    public Vector2 LatestMoveInput { get; private set; }
+
+    /// <summary>Current yaw angle from the camera.</summary>
+    public float LatestYaw => Camera != null ? Camera.Yaw : 0f;
+
+    /// <summary>Current pitch angle from the camera.</summary>
+    public float LatestPitch => Camera != null ? Camera.Pitch : 0f;
+
+    /// <summary>True if sprint is held this frame.</summary>
+    public bool LatestSprintHeld { get; private set; }
+
+    /// <summary>True if fire/attack is held this frame.</summary>
+    public bool LatestFireHeld { get; private set; }
+
+    // ── One-frame latches (survive until consumed by NetworkPlayerController)
+    private bool _jumpLatch;
+    private bool _crouchPressLatch;
+    private bool _crouchReleaseLatch;
+
+    /// <summary>Consume the latched jump press. Returns true once, then resets.</summary>
+    public bool ConsumeJumpLatch()
+    {
+        bool v = _jumpLatch;
+        _jumpLatch = false;
+        return v;
+    }
+
+    /// <summary>Consume the latched crouch press.</summary>
+    public bool ConsumeCrouchPressLatch()
+    {
+        bool v = _crouchPressLatch;
+        _crouchPressLatch = false;
+        return v;
+    }
+
+    /// <summary>Consume the latched crouch release.</summary>
+    public bool ConsumeCrouchReleaseLatch()
+    {
+        bool v = _crouchReleaseLatch;
+        _crouchReleaseLatch = false;
+        return v;
+    }
+
     // =================================================================
     //  Lifecycle
     // =================================================================
 
     private void Awake()
     {
-        // Resolve actions from the Player map
+        // Resolve actions from the Player map.
+        // CRITICAL: Clone the asset so each prefab instance owns independent
+        // InputAction objects.  Without this, the second player's OnDisable()
+        // disables the SAME actions the host player is reading.
         if (InputActions != null)
         {
+            InputActions = Object.Instantiate(InputActions);
             var playerMap = InputActions.FindActionMap("Player", true);
             _moveAction   = playerMap.FindAction("Move",   true);
             _lookAction   = playerMap.FindAction("Look",   true);
@@ -64,6 +115,12 @@ public class PlayerInputManager : MonoBehaviour
             _attackAction   = playerMap.FindAction("Attack",   true);
             _previousAction = playerMap.FindAction("Previous", true);
             _nextAction     = playerMap.FindAction("Next",     true);
+        }
+        else
+        {
+            Debug.LogError("[PlayerInputManager] InputActions asset is NULL! " +
+                           "Assign the InputSystem_Actions asset on the Player Prefab's " +
+                           "PlayerInputManager component. All input will be zero.");
         }
     }
 
@@ -78,7 +135,9 @@ public class PlayerInputManager : MonoBehaviour
         _previousAction?.Enable();
         _nextAction?.Enable();
 
-        LockCursor();
+        // NOTE: Cursor locking is handled by NetworkPlayerSetup.ConfigureOwner().
+        // Do NOT lock here — OnEnable fires before OnNetworkSpawn, so we don't
+        // yet know if this instance is the local owner.
     }
 
     private void OnDisable()
@@ -92,70 +151,62 @@ public class PlayerInputManager : MonoBehaviour
         _previousAction?.Disable();
         _nextAction?.Disable();
 
-        UnlockCursor();
+        // NOTE: Do NOT unlock cursor here.  When a remote player's
+        // PlayerInputManager is disabled by ConfigureRemote(), calling
+        // UnlockCursor() would free the host's cursor.
+    }
+
+    private void OnDestroy()
+    {
+        // Clean up the cloned InputActionAsset to prevent memory leaks.
+        if (InputActions != null)
+        {
+            Destroy(InputActions);
+            InputActions = null;
+        }
     }
 
     // =================================================================
-    //  Update — feed character inputs
+    //  Update — read inputs and expose them
     // =================================================================
 
     private void Update()
     {
-        // Toggle cursor lock with Escape
-        if (Keyboard.current != null && Keyboard.current[PauseKey].wasPressedThisFrame)
-        {
-            if (_cursorLocked) UnlockCursor();
-            else               LockCursor();
-        }
+        // NOTE: Escape / pause menu is handled by NetworkGameManager.
+        // This component only reads gameplay input.
 
-        if (Character == null) return;
-
+        // Read raw input ─────────────────────────────────────────────
         Vector2 move = _moveAction != null ? _moveAction.ReadValue<Vector2>() : Vector2.zero;
+        LatestMoveInput = move;
 
-        var inputs = new PlayerCharacterController.CharacterInputs
-        {
-            MoveAxisForward = move.y,
-            MoveAxisRight   = move.x,
-            CameraRotation  = Camera != null ? Camera.Rotation : transform.rotation,
-            JumpDown        = _jumpAction != null && _jumpAction.WasPressedThisFrame(),
-            CrouchDown      = _crouchAction != null && _crouchAction.WasPressedThisFrame(),
-            CrouchUp        = _crouchAction != null && _crouchAction.WasReleasedThisFrame(),
-            SprintHeld      = _sprintAction != null && _sprintAction.IsPressed()
-        };
+        LatestSprintHeld = _sprintAction != null && _sprintAction.IsPressed();
 
-        Character.SetInputs(ref inputs);
+        // Latch one-frame signals (persist until consumed)
+        if (_jumpAction != null && _jumpAction.WasPressedThisFrame())
+            _jumpLatch = true;
 
-        // ── Feed combat / tool inputs ─────────────────────────────────
+        if (_crouchAction != null && _crouchAction.WasPressedThisFrame())
+            _crouchPressLatch = true;
+
+        if (_crouchAction != null && _crouchAction.WasReleasedThisFrame())
+            _crouchReleaseLatch = true;
+
+        // Attack / fire
         bool attack = _cursorLocked && _attackAction != null && _attackAction.IsPressed();
+        LatestFireHeld = attack;
 
-        // Admin mode: route attack to terrain tool, disable weapon
-        // Combat mode: route attack to launcher
-        bool adminToolActive = Tool != null && Tool.isActiveAndEnabled;
-
-        if (adminToolActive)
+        // ── Terrain tool mode cycling (local UI feedback) ────────────
+        if (Tool != null && Tool.isActiveAndEnabled)
         {
-            // Admin tools get LMB
-            Tool.SetAttackInput(attack);
-
             if (_previousAction != null && _previousAction.WasPressedThisFrame())
                 Tool.CycleMode(-1);
             if (_nextAction != null && _nextAction.WasPressedThisFrame())
                 Tool.CycleMode(1);
-
-            // Ensure launcher does NOT fire in admin mode
-            if (Launcher != null)
-                Launcher.SetFireInput(false);
-        }
-        else
-        {
-            // Combat mode: LMB fires projectiles
-            if (Launcher != null)
-                Launcher.SetFireInput(attack);
         }
     }
 
     // =================================================================
-    //  LateUpdate — feed camera inputs
+    //  LateUpdate — feed camera inputs (local only, always)
     // =================================================================
 
     private void LateUpdate()

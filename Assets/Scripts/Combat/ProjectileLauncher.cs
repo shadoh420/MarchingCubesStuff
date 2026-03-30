@@ -1,24 +1,27 @@
+using Unity.Netcode;
 using UnityEngine;
 
 /// <summary>
-/// First-person projectile launcher. Fires <see cref="Fireball"/> projectiles
-/// from slightly in front of the camera center on LMB press.
+/// Server-authoritative projectile launcher.
 ///
-/// Input is fed each frame by <see cref="PlayerInputManager"/> through
-/// <see cref="SetFireInput"/>, following the same pattern as
-/// <see cref="TerrainTool.SetAttackInput"/>.
+/// PHASE 12 FLOW:
+///   Client presses LMB → NetworkPlayerController sends FireHeld=true to server
+///   → Server: ProjectileLauncher.SetFireInput(true) → Fire() → Instantiate
+///     fireball → NetworkObject.Spawn() → all clients see it via NGO sync.
 ///
-/// Configurable fire rate (cooldown), projectile prefab reference,
-/// speed overrides, and crater parameters. All tuneable in Inspector.
+/// The server calculates the aim direction from the KCC's rotation
+/// combined with the synced pitch from <see cref="NetworkPlayerController"/>.
+///
+/// Cooldown is enforced server-side — clients cannot cheat fire rate.
 /// </summary>
-public class ProjectileLauncher : MonoBehaviour
+public class ProjectileLauncher : NetworkBehaviour
 {
     // ── References ───────────────────────────────────────────────────
     [Header("References")]
-    [Tooltip("TerrainManager for crater deformation. Wired at runtime by PlayerSpawnManager.")]
+    [Tooltip("TerrainManager for crater deformation. Wired at runtime.")]
     public TerrainManager terrainManager;
 
-    [Tooltip("Camera transform used for aim direction. Wired at runtime by PlayerSpawnManager.")]
+    [Tooltip("Camera transform used for aim direction. Wired at runtime.")]
     public Transform cameraTransform;
 
     [Tooltip("The player's root GameObject (used for self-damage identification).")]
@@ -29,18 +32,18 @@ public class ProjectileLauncher : MonoBehaviour
 
     // ── Prefabs ─────────────────────────────────────────────────────
     [Header("Prefabs")]
-    [Tooltip("Fireball projectile prefab (must have Fireball component).")]
+    [Tooltip("Fireball projectile prefab (must have Fireball + NetworkObject components).")]
     public GameObject FireballPrefab;
 
-    [Tooltip("Fireball VFX prefab from PyroParticles (trail + glow). Spawned as a child of the projectile.")]
+    [Tooltip("Fireball VFX prefab from PyroParticles (trail + glow).")]
     public GameObject FireballVFXPrefab;
 
-    [Tooltip("Explosion VFX prefab from PyroParticles. Passed to the Fireball for impact.")]
+    [Tooltip("Explosion VFX prefab from PyroParticles.")]
     public GameObject ExplosionVFXPrefab;
 
     // ── Audio ────────────────────────────────────────────────────────
     [Header("Audio")]
-    [Tooltip("Sound played on each shot. Drag a FireShoot clip from PyroParticles/Prefab/Audio.")]
+    [Tooltip("Sound played on each shot.")]
     public AudioClip LaunchSound;
 
     [Tooltip("Volume of the launch sound (0–1).")]
@@ -52,40 +55,25 @@ public class ProjectileLauncher : MonoBehaviour
     [Tooltip("Minimum seconds between shots.")]
     public float Cooldown = 1.25f;
 
-    [Tooltip("Distance in front of the camera where the projectile spawns (avoids self-collision).")]
+    [Tooltip("Distance in front of the camera where the projectile spawns.")]
     public float SpawnOffset = 1.5f;
 
-    // ── Projectile overrides (applied to each spawned Fireball) ─────
+    // ── Projectile overrides ─────────────────────────────────────────
     [Header("Projectile Overrides")]
-    [Tooltip("Forward speed (m/s). 0 = use Fireball prefab default.")]
     public float SpeedOverride = 25f;
-
-    [Tooltip("Custom gravity for the projectile.")]
     public Vector3 GravityOverride = Vector3.zero;
-
-    [Tooltip("Crater radius on terrain impact.")]
     public float CraterRadius = 1.5f;
-
-    [Tooltip("Crater density delta on terrain impact.")]
     public float CraterDelta = 30f;
 
     // ── Damage overrides ──────────────────────────────────────────
     [Header("Damage")]
-    [Tooltip("Direct-hit damage dealt to a player.")]
     public float DirectDamage = 40f;
-
-    [Tooltip("Maximum splash damage at the centre of the explosion.")]
     public float SplashDamage = 25f;
-
-    [Tooltip("Splash damage radius (world units).")]
     public float SplashRadius = 4f;
-
-    [Tooltip("Multiplier for self-inflicted splash damage (0.5 = Quake-style).")]
     [Range(0f, 1f)]
     public float SelfDamageMultiplier = 0.5f;
 
     // ── Public state (read by CombatHUD) ────────────────────────────
-    /// <summary>Normalized cooldown progress: 0 = ready, 1 = just fired.</summary>
     public float CooldownProgress
     {
         get
@@ -96,34 +84,21 @@ public class ProjectileLauncher : MonoBehaviour
         }
     }
 
-    /// <summary>True when the launcher is ready to fire.</summary>
     public bool IsReady => Time.time - _lastFireTime >= Cooldown;
 
     // ── Input state ─────────────────────────────────────────────────
     private bool _fireHeld;
-    private bool _firedThisPress;
 
     // ── Internals ───────────────────────────────────────────────────
     private float _lastFireTime = -999f;
     private AudioSource _audioSource;
 
     // =================================================================
-    //  Public Input API
+    //  Public Input API (called by NetworkPlayerController on server)
     // =================================================================
 
-    /// <summary>
-    /// Called by <see cref="PlayerInputManager"/> each frame with the
-    /// current state of the Attack/Fire action.
-    /// Fires on press (not hold-to-spam) to match typical shooter feel.
-    /// </summary>
     public void SetFireInput(bool held)
     {
-        // Detect rising edge (press, not hold)
-        if (held && !_fireHeld)
-        {
-            _firedThisPress = false;
-        }
-
         _fireHeld = held;
     }
 
@@ -133,44 +108,43 @@ public class ProjectileLauncher : MonoBehaviour
 
     private void Awake()
     {
-        // Create a dedicated AudioSource on this GameObject for launch sounds
         _audioSource = gameObject.AddComponent<AudioSource>();
         _audioSource.playOnAwake = false;
-        _audioSource.spatialBlend = 0f; // 2D sound for the local player
+        _audioSource.spatialBlend = 1f;           // full 3D
+        _audioSource.rolloffMode  = AudioRolloffMode.Logarithmic;
+        _audioSource.minDistance   = 5f;
+        _audioSource.maxDistance   = 80f;
     }
 
     private void Update()
     {
-        if (cameraTransform == null) return;
+        // Only the server processes fire logic
+        if (!IsServer) return;
 
-        // Fire on press or allow hold-to-fire with cooldown
         if (_fireHeld && IsReady)
         {
-            Fire();
+            ServerFire();
         }
     }
 
     // =================================================================
-    //  Fire
+    //  Server-authoritative fire
     // =================================================================
 
-    /// <summary>
-    /// Spawns a fireball projectile at the camera spawn point, aimed
-    /// along the camera forward direction.
-    /// </summary>
-    private void Fire()
+    private void ServerFire()
     {
         _lastFireTime = Time.time;
 
-        // Play launch sound
-        if (LaunchSound != null && _audioSource != null)
-        {
-            _audioSource.PlayOneShot(LaunchSound, LaunchVolume);
-        }
+        // Calculate aim from the KCC rotation + synced pitch
+        var netController = GetComponent<NetworkPlayerController>();
+        float pitch = netController != null ? netController.SyncedPitch : 0f;
+        Quaternion aimRot = Quaternion.Euler(pitch, transform.eulerAngles.y, 0f);
+        Vector3 aimDir = aimRot * Vector3.forward;
 
-        // Spawn position: slightly in front of camera to clear the player capsule
-        Vector3 spawnPos = cameraTransform.position + cameraTransform.forward * SpawnOffset;
-        Quaternion spawnRot = cameraTransform.rotation;
+        // Spawn position: in front of the character's eye height
+        Vector3 eyePos = transform.position + Vector3.up * 1.6f; // approx eye height
+        Vector3 spawnPos = eyePos + aimDir * SpawnOffset;
+        Quaternion spawnRot = Quaternion.LookRotation(aimDir);
 
         // Instantiate the projectile
         GameObject projectileGO;
@@ -180,7 +154,6 @@ public class ProjectileLauncher : MonoBehaviour
         }
         else
         {
-            // Fallback: create a bare projectile if no prefab is assigned
             projectileGO = CreateFallbackProjectile(spawnPos, spawnRot);
         }
 
@@ -193,30 +166,43 @@ public class ProjectileLauncher : MonoBehaviour
         fireball.ShooterCollider = playerCollider;
         fireball.ShooterObject   = playerObject;
 
-        // Apply overrides
         if (SpeedOverride > 0f) fireball.Speed = SpeedOverride;
         fireball.Gravity      = GravityOverride;
         fireball.CraterRadius = CraterRadius;
         fireball.CraterDelta  = CraterDelta;
-
-        // Apply damage overrides
         fireball.DirectDamage        = DirectDamage;
         fireball.SplashDamage        = SplashDamage;
         fireball.SplashRadius        = SplashRadius;
         fireball.SelfDamageMultiplier = SelfDamageMultiplier;
 
-        // Pass explosion VFX prefab
-        if (ExplosionVFXPrefab != null)
-            fireball.ExplosionPrefab = ExplosionVFXPrefab;
+        // NOTE: ExplosionPrefab and TrailVFXPrefab are now serialized on the
+        // Fireball prefab itself.  Clients instantiate the prefab fresh from
+        // NGO, so only inspector-serialized values survive across the network.
+        // Do NOT override them here — the server's runtime writes would be
+        // lost on every non-host client.
 
-        // Attach trail VFX as a child (PyroParticles visual only)
-        if (FireballVFXPrefab != null)
+        // Spawn as NetworkObject — all clients will see it
+        var netObj = projectileGO.GetComponent<NetworkObject>();
+        if (netObj != null)
         {
-            GameObject vfx = Instantiate(FireballVFXPrefab, spawnPos, spawnRot);
-            vfx.transform.SetParent(projectileGO.transform, true);
+            netObj.Spawn();
+        }
+        else
+        {
+            Debug.LogWarning("[ProjectileLauncher] Fireball prefab missing NetworkObject! " +
+                             "Spawning locally only (not networked).");
+        }
 
-            // Disable the PyroParticles physics (we have our own)
-            DisablePyroPhysics(vfx);
+        // Play launch sound for all clients
+        PlayLaunchSoundRpc(spawnPos);
+    }
+
+    [Rpc(SendTo.Everyone)]
+    private void PlayLaunchSoundRpc(Vector3 position)
+    {
+        if (LaunchSound != null && _audioSource != null)
+        {
+            _audioSource.PlayOneShot(LaunchSound, LaunchVolume);
         }
     }
 
@@ -224,35 +210,27 @@ public class ProjectileLauncher : MonoBehaviour
     //  Helpers
     // =================================================================
 
-    /// <summary>
-    /// Creates a minimal projectile GameObject when no prefab is assigned.
-    /// Useful for testing without prefabs configured.
-    /// </summary>
     private GameObject CreateFallbackProjectile(Vector3 pos, Quaternion rot)
     {
         GameObject go = new GameObject("Fireball");
         go.transform.position = pos;
         go.transform.rotation = rot;
 
-        // Rigidbody
         Rigidbody rb = go.AddComponent<Rigidbody>();
         rb.useGravity = false;
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
-        // Small sphere collider
         SphereCollider col = go.AddComponent<SphereCollider>();
         col.radius = 0.3f;
 
-        // Visual: tiny sphere so we can at least see something
+        // Visual
         GameObject visual = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         visual.transform.SetParent(go.transform, false);
         visual.transform.localScale = Vector3.one * 0.4f;
 
-        // Remove the primitive's collider (our parent has the real one)
         Collider visualCol = visual.GetComponent<Collider>();
         if (visualCol != null) Object.DestroyImmediate(visualCol);
 
-        // Orange emissive material
         Renderer rend = visual.GetComponent<Renderer>();
         if (rend != null)
         {
@@ -264,42 +242,5 @@ public class ProjectileLauncher : MonoBehaviour
         }
 
         return go;
-    }
-
-    /// <summary>
-    /// Disables Rigidbody and Collider components on the PyroParticles
-    /// VFX instance so it doesn't interfere with our own projectile
-    /// physics. The VFX is purely visual.
-    /// </summary>
-    private void DisablePyroPhysics(GameObject vfxRoot)
-    {
-        // Disable all rigidbodies (set velocity BEFORE kinematic to avoid warning)
-        foreach (Rigidbody rb in vfxRoot.GetComponentsInChildren<Rigidbody>(true))
-        {
-            if (!rb.isKinematic)
-            {
-                rb.linearVelocity = Vector3.zero;
-                rb.isKinematic = true;
-            }
-        }
-
-        // Disable all colliders
-        foreach (Collider col in vfxRoot.GetComponentsInChildren<Collider>(true))
-        {
-            col.enabled = false;
-        }
-
-        // Disable PyroParticles scripts that interfere with our physics/collision
-        foreach (var script in vfxRoot.GetComponentsInChildren<DigitalRuby.PyroParticles.FireProjectileScript>(true))
-        {
-            script.enabled = false;
-        }
-
-        // Disable collision forwarders — their CollisionHandler is null since
-        // we're not using PyroParticles' collision system, causing NullRefs.
-        foreach (var fwd in vfxRoot.GetComponentsInChildren<DigitalRuby.PyroParticles.FireCollisionForwardScript>(true))
-        {
-            fwd.enabled = false;
-        }
     }
 }

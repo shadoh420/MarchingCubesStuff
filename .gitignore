@@ -22,3 +22,14 @@ Thumbs.db
 *.log
 *.csproj
 *.sln
+
+# Recordings / captures
+Recordings/
+
+# Compressed build archives
+*.7z
+*.zip
+*.rar
+
+# AI continuation prompts (session-specific, not source)
+CONTINUATION_PROMPT*.md
