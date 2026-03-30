@@ -18,8 +18,9 @@ using Unity.Mathematics;
 public struct DensityJob : IJobParallelFor
 {
     // ── Grid parameters ──────────────────────────────────────────────
-    [ReadOnly] public int   numPointsPerAxis;
+    [ReadOnly] public int   numPointsPerAxis;  // lodPointsPerAxis (= ChunkSize / step + 1)
     [ReadOnly] public float3 worldOffset;      // chunk world-space origin
+    [ReadOnly] public int   vertexStep;        // LOD stride: 1 = full, 2 = half, 4 = quarter
 
     // ── Noise parameters ─────────────────────────────────────────────
     [ReadOnly] public float noiseScale;
@@ -27,20 +28,21 @@ public struct DensityJob : IJobParallelFor
     [ReadOnly] public float surfaceY;
 
     // ── Output ───────────────────────────────────────────────────────
-    [WriteOnly] public NativeArray<float> densities;   // length = numPointsPerAxis^3
+    [WriteOnly] public NativeArray<float> densities;   // capacity = max LOD0 size; we write [0..lodTotal)
 
     // -----------------------------------------------------------------
     public void Execute(int index)
     {
-        // Flat index → 3-D grid coords  (must match TerrainChunk.FlatIndex)
+        // Flat index → 3-D LOD grid coords
         int npa = numPointsPerAxis;
-        int x = index % npa;
-        int y = (index / npa) % npa;
-        int z = index / (npa * npa);
+        int lx = index % npa;
+        int ly = (index / npa) % npa;
+        int lz = index / (npa * npa);
 
-        float wx = x + worldOffset.x;
-        float wy = y + worldOffset.y;
-        float wz = z + worldOffset.z;
+        // Multiply by step to get the actual world-space sample position
+        float wx = lx * vertexStep + worldOffset.x;
+        float wy = ly * vertexStep + worldOffset.y;
+        float wz = lz * vertexStep + worldOffset.z;
 
         // Base gradient: solid below surfaceY, air above
         float density = surfaceY - wy;

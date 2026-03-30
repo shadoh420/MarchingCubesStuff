@@ -13,9 +13,10 @@ using Unity.Mathematics;
 public struct MarchingCubesJob : IJobParallelFor
 {
     // ── Grid parameters ──────────────────────────────────────────────
-    [ReadOnly] public int chunkSize;          // voxels per axis (e.g. 16)
-    [ReadOnly] public int numPointsPerAxis;   // chunkSize + 1 (density samples per axis)
+    [ReadOnly] public int chunkSize;          // LOD voxels per axis (ChunkSize / step)
+    [ReadOnly] public int numPointsPerAxis;   // chunkSize + 1 (LOD density samples per axis)
     [ReadOnly] public float isoLevel;         // surface threshold (0 = surface)
+    [ReadOnly] public int vertexStep;         // LOD stride: 1 = full, 2 = half, 4 = quarter
 
     // ── Input ────────────────────────────────────────────────────────
     [ReadOnly] public NativeArray<float> densities;             // length = numPointsPerAxis^3
@@ -115,8 +116,8 @@ public struct MarchingCubesJob : IJobParallelFor
         int idxA = cornerIndexAFromEdge[edgeIndex];
         int idxB = cornerIndexBFromEdge[edgeIndex];
 
-        float3 posA = new float3(x, y, z) + CornerOffset(idxA);
-        float3 posB = new float3(x, y, z) + CornerOffset(idxB);
+        float3 posA = (new float3(x, y, z) + CornerOffset(idxA)) * vertexStep;
+        float3 posB = (new float3(x, y, z) + CornerOffset(idxB)) * vertexStep;
 
         float densA = CornerDensity(idxA, d0, d1, d2, d3, d4, d5, d6, d7);
         float densB = CornerDensity(idxB, d0, d1, d2, d3, d4, d5, d6, d7);

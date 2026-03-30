@@ -60,6 +60,16 @@ public class TerrainChunk : MonoBehaviour
     private JobHandle           pendingJobHandle;
     private bool                hasPendingJob;
 
+    // ── LOD state (set each generation cycle) ────────────────────────
+    private int currentLodStep   = 1;
+    private int lodPointsPerAxis = ChunkSize + 1;
+    private int lodVoxelsPerAxis = ChunkSize;
+    private int lodVoxelCount    = ChunkSize * ChunkSize * ChunkSize;
+
+    // ── Async physics bake ───────────────────────────────────────────
+    private JobHandle pendingBakeHandle;
+    private bool      hasPendingBake;
+
     // ── Shared look-up tables (allocated once, ref-counted) ──────────
     private static NativeArray<int> s_EdgeTable;
     private static NativeArray<int> s_TriTable;          // flattened 256×16
@@ -143,7 +153,8 @@ public class TerrainChunk : MonoBehaviour
     /// Call <see cref="CompleteGeneration"/> on a later frame.
     /// </summary>
     public void BeginGeneration(Vector3Int coord, Material mat,
-                                float noiseScale, float amplitude, float surfaceY)
+                                float noiseScale, float amplitude, float surfaceY,
+                                int lodStep = 1)
     {
         ForceCompletePendingJob();
 
@@ -151,6 +162,12 @@ public class TerrainChunk : MonoBehaviour
         this.noiseScale = noiseScale;
         this.amplitude  = amplitude;
         this.surfaceY   = surfaceY;
+
+        // Compute LOD-derived sizes (arrays stay at max LOD0 capacity)
+        currentLodStep   = lodStep;
+        lodVoxelsPerAxis = ChunkSize / lodStep;
+        lodPointsPerAxis = lodVoxelsPerAxis + 1;
+        lodVoxelCount    = lodVoxelsPerAxis * lodVoxelsPerAxis * lodVoxelsPerAxis;
 
         if (mat != null) meshRenderer.sharedMaterial = mat;
 
@@ -177,10 +194,39 @@ public class TerrainChunk : MonoBehaviour
         pendingJobHandle.Complete();
         hasPendingJob = false;
 
-        // Sync native → managed so terrain editing reads correct data
-        nativeDensities.CopyTo(densityField);
+        // Only sync density back for LOD0 — editing only affects nearby full-res chunks
+        if (currentLodStep == 1)
+            nativeDensities.CopyTo(densityField);
 
-        ApplyMeshFromNativeArrays(bakeCollider);
+        int vertCount = ApplyMeshFromNativeArrays();
+
+        // Clear any previous collider
+        meshCollider.sharedMesh = null;
+
+        if (bakeCollider && vertCount > 0)
+        {
+            // Schedule async physics bake on a worker thread
+            var bakeJob = new PhysicsBakeJob
+            {
+                meshInstanceId = mesh.GetInstanceID(),
+                convex         = false
+            };
+            pendingBakeHandle = bakeJob.Schedule();
+            hasPendingBake    = true;
+        }
+    }
+
+    /// <summary>
+    /// PHASE 3 — Completes the async physics bake and assigns the
+    /// pre-baked mesh to the MeshCollider (cheap pointer swap).
+    /// Call this after yielding a frame so the bake job has time to run.
+    /// </summary>
+    public void CompletePhysicsBake()
+    {
+        if (!hasPendingBake) return;
+        pendingBakeHandle.Complete();
+        hasPendingBake = false;
+        meshCollider.sharedMesh = mesh;
     }
 
     // =================================================================
@@ -195,10 +241,26 @@ public class TerrainChunk : MonoBehaviour
     public void GenerateMesh()
     {
         ForceCompletePendingJob();
+
+        // Sync path always uses full LOD0 resolution
+        currentLodStep   = 1;
+        lodVoxelsPerAxis = ChunkSize;
+        lodPointsPerAxis = NumPointsPerAxis;
+        lodVoxelCount    = TotalVoxels;
+
         ScheduleMCJobOnly();
         pendingJobHandle.Complete();
         hasPendingJob = false;
-        ApplyMeshFromNativeArrays(true);
+
+        int vertCount = ApplyMeshFromNativeArrays();
+
+        // Blocking bake is acceptable for interactive edits
+        meshCollider.sharedMesh = null;
+        if (vertCount > 0)
+        {
+            Physics.BakeMesh(mesh.GetInstanceID(), false);
+            meshCollider.sharedMesh = mesh;
+        }
     }
 
     // =================================================================
@@ -211,6 +273,8 @@ public class TerrainChunk : MonoBehaviour
     /// </summary>
     private void ScheduleDensityAndMCJobs()
     {
+        int lodTotalPoints = lodPointsPerAxis * lodPointsPerAxis * lodPointsPerAxis;
+
         float3 worldOff = new float3(
             ChunkCoord.x * ChunkSize,
             ChunkCoord.y * ChunkSize,
@@ -218,21 +282,23 @@ public class TerrainChunk : MonoBehaviour
 
         var densityJob = new DensityJob
         {
-            numPointsPerAxis = NumPointsPerAxis,
+            numPointsPerAxis = lodPointsPerAxis,
             worldOffset      = worldOff,
+            vertexStep       = currentLodStep,
             noiseScale       = noiseScale,
             amplitude        = amplitude,
             surfaceY         = surfaceY,
             densities        = nativeDensities
         };
 
-        JobHandle densityHandle = densityJob.Schedule(TotalPoints, 64);
+        JobHandle densityHandle = densityJob.Schedule(lodTotalPoints, 64);
 
         var mcJob = new MarchingCubesJob
         {
-            chunkSize            = ChunkSize,
-            numPointsPerAxis     = NumPointsPerAxis,
+            chunkSize            = lodVoxelsPerAxis,
+            numPointsPerAxis     = lodPointsPerAxis,
             isoLevel             = IsoLevel,
+            vertexStep           = currentLodStep,
             densities            = nativeDensities,
             edgeTable            = s_EdgeTable,
             triTable             = s_TriTable,
@@ -243,7 +309,7 @@ public class TerrainChunk : MonoBehaviour
         };
 
         // MC job depends on density — won't start until density finishes
-        pendingJobHandle = mcJob.Schedule(TotalVoxels, 64, densityHandle);
+        pendingJobHandle = mcJob.Schedule(lodVoxelCount, 64, densityHandle);
         hasPendingJob = true;
     }
 
@@ -258,9 +324,10 @@ public class TerrainChunk : MonoBehaviour
 
         var mcJob = new MarchingCubesJob
         {
-            chunkSize            = ChunkSize,
-            numPointsPerAxis     = NumPointsPerAxis,
+            chunkSize            = lodVoxelsPerAxis,
+            numPointsPerAxis     = lodPointsPerAxis,
             isoLevel             = IsoLevel,
+            vertexStep           = currentLodStep,
             densities            = nativeDensities,
             edgeTable            = s_EdgeTable,
             triTable             = s_TriTable,
@@ -270,7 +337,7 @@ public class TerrainChunk : MonoBehaviour
             vertexCountPerVoxel  = nativeVertCounts
         };
 
-        pendingJobHandle = mcJob.Schedule(TotalVoxels, 64);
+        pendingJobHandle = mcJob.Schedule(lodVoxelCount, 64);
         hasPendingJob = true;
     }
 
@@ -279,17 +346,17 @@ public class TerrainChunk : MonoBehaviour
     /// compacts it into a Unity Mesh, and optionally assigns the collider.
     /// Must only be called after the job handle has been completed.
     /// </summary>
-    private void ApplyMeshFromNativeArrays(bool bakeCollider)
+    private int ApplyMeshFromNativeArrays()
     {
         int totalVerts = 0;
-        for (int i = 0; i < TotalVoxels; i++)
+        for (int i = 0; i < lodVoxelCount; i++)
             totalVerts += nativeVertCounts[i];
 
         var meshVerts = new Vector3[totalVerts];
         var meshTris  = new int[totalVerts];
 
         int vi = 0;
-        for (int i = 0; i < TotalVoxels; i++)
+        for (int i = 0; i < lodVoxelCount; i++)
         {
             int count = nativeVertCounts[i];
             int baseIdx = i * 15;
@@ -308,9 +375,7 @@ public class TerrainChunk : MonoBehaviour
         mesh.RecalculateNormals();
         mesh.RecalculateBounds();
 
-        meshCollider.sharedMesh = null;
-        if (bakeCollider && totalVerts > 0)
-            meshCollider.sharedMesh = mesh;
+        return totalVerts;
     }
 
     /// <summary>
@@ -320,6 +385,11 @@ public class TerrainChunk : MonoBehaviour
     /// </summary>
     private void ForceCompletePendingJob()
     {
+        if (hasPendingBake)
+        {
+            pendingBakeHandle.Complete();
+            hasPendingBake = false;
+        }
         if (!hasPendingJob) return;
         pendingJobHandle.Complete();
         hasPendingJob = false;

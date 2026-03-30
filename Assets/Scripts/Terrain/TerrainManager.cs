@@ -54,6 +54,12 @@ public class TerrainManager : MonoBehaviour
     [Tooltip("Vertical radius within which MeshColliders are baked.")]
     public int colliderDistanceY  = 2;
 
+    [Header("LOD Distance (chunks)")]
+    [Tooltip("Chunks within this Chebyshev radius use LOD0 (step=1, full resolution).")]
+    public int lod0DistanceXZ = 2;
+    [Tooltip("Chunks within this radius use LOD1 (step=2, half resolution). Beyond this uses LOD2 (step=4).")]
+    public int lod1DistanceXZ = 4;
+
     // ── Visuals ──────────────────────────────────────────────────────
     [Header("Material")]
     public Material terrainMaterial;
@@ -78,6 +84,12 @@ public class TerrainManager : MonoBehaviour
     // Reusable lists to avoid GC alloc every update
     private readonly List<Vector3Int> coordsToRemove = new List<Vector3Int>();
     private readonly List<TerrainChunk> pendingChunks = new List<TerrainChunk>();
+    private readonly List<Vector3Int> sortedCoords = new List<Vector3Int>();
+    private readonly List<TerrainChunk> pendingBakeChunks = new List<TerrainChunk>();
+
+    // Distance-sort state (avoids lambda allocation on every sort)
+    private Vector3Int sortCenter;
+    private System.Comparison<Vector3Int> cachedDistanceComparer;
 
     // =================================================================
     //  Lifecycle
@@ -97,6 +109,8 @@ public class TerrainManager : MonoBehaviour
                              "Using this Transform as the center.");
             player = transform;
         }
+
+        cachedDistanceComparer = CompareByDistance;
 
         WarmUpPool();
 
@@ -137,11 +151,13 @@ public class TerrainManager : MonoBehaviour
     /// <summary>
     /// 1. Deactivate and pool any active chunks that fell outside the
     ///    view distance (batched across frames).
-    /// 2. Loop through the 3-D radius around <paramref name="center"/>.
-    ///    For each missing coordinate:
-    ///      a) BeginGeneration() — fill density + schedule Burst job.
-    ///      b) After a batch, yield so jobs run on worker threads.
-    ///      c) Next frame: CompleteGeneration() + SetActive(true).
+    /// 2. Collect ALL missing chunk coordinates, sort by squared distance
+    ///    from the player so nearby chunks load first.
+    /// 3. Process sorted list in batches with a three-phase pipeline:
+    ///      Frame N  : BeginGeneration() — schedule Density + MC Burst jobs.
+    ///      Frame N+1: CompleteGeneration() — apply mesh + schedule async bake.
+    ///      Frame N+2: CompletePhysicsBake() — assign collider (cheap swap).
+    ///    Bake jobs from batch N overlap with MC jobs from batch N+1.
     /// </summary>
     private IEnumerator LoadTerrain(Vector3Int center, int generation)
     {
@@ -173,17 +189,28 @@ public class TerrainManager : MonoBehaviour
             }
         }
 
-        // ── Phase 2: Load missing chunks (schedule → yield → complete) ──
-        pendingChunks.Clear();
+        // ── Phase 2: Collect + sort missing coords by distance ───────
+        sortedCoords.Clear();
+        sortCenter = center;
 
         for (int x = -viewDistanceXZ; x <= viewDistanceXZ; x++)
         for (int y = -viewDistanceY;  y <= viewDistanceY;  y++)
         for (int z = -viewDistanceXZ; z <= viewDistanceXZ; z++)
         {
             Vector3Int coord = new Vector3Int(center.x + x, center.y + y, center.z + z);
+            if (!activeChunks.ContainsKey(coord))
+                sortedCoords.Add(coord);
+        }
 
-            if (activeChunks.ContainsKey(coord))
-                continue;
+        sortedCoords.Sort(cachedDistanceComparer);
+
+        // ── Phase 3: Load sorted chunks (schedule → yield → complete) ──
+        pendingChunks.Clear();
+        pendingBakeChunks.Clear();
+
+        for (int idx = 0; idx < sortedCoords.Count; idx++)
+        {
+            Vector3Int coord = sortedCoords[idx];
 
             // ── Skip chunks guaranteed to produce zero geometry ─────────
             float chunkWorldYMin = coord.y * TerrainChunk.ChunkSize;
@@ -195,10 +222,11 @@ public class TerrainManager : MonoBehaviour
                 continue;
             }
 
-            // ── Phase A: schedule the Burst job (non-blocking) ────────
+            // ── Schedule the Burst job with LOD based on distance ──────
+            int lodStep = GetLodStep(coord, center);
             TerrainChunk chunk = GetChunkFromPool();
             chunk.gameObject.name = $"Chunk_{coord.x}_{coord.y}_{coord.z}";
-            chunk.BeginGeneration(coord, terrainMaterial, noiseScale, amplitude, surfaceY);
+            chunk.BeginGeneration(coord, terrainMaterial, noiseScale, amplitude, surfaceY, lodStep);
 
             activeChunks[coord] = chunk;
             pendingChunks.Add(chunk);
@@ -207,25 +235,42 @@ public class TerrainManager : MonoBehaviour
             // execute on worker threads across the frame boundary.
             if (pendingChunks.Count >= chunksPerFrame)
             {
-                yield return null;  // ← jobs run on workers during this gap
+                yield return null;  // ← MC jobs + previous bake jobs run
 
                 if (generation != loadGeneration) yield break;
 
-                // ── Phase B: complete the batch + activate ─────────────
+                // Complete previous batch's async physics bakes
+                CompletePendingBakes();
+
+                // Complete current batch: MC → mesh → schedule new bakes
                 CompletePendingBatch(center);
             }
         }
 
         // Complete any remaining partial batch
         if (pendingChunks.Count > 0)
+        {
+            yield return null;
+            if (generation != loadGeneration) yield break;
+            CompletePendingBakes();
             CompletePendingBatch(center);
+        }
+
+        // Final yield to let the last batch's physics bakes finish
+        if (pendingBakeChunks.Count > 0)
+        {
+            yield return null;
+            if (generation != loadGeneration) yield break;
+            CompletePendingBakes();
+        }
 
         loadingRoutine = null;
     }
 
     /// <summary>
     /// Completes all pending Burst jobs, applies their meshes, activates
-    /// the GameObjects, and optionally bakes colliders for nearby chunks.
+    /// the GameObjects, schedules async physics bakes for nearby chunks,
+    /// and tracks those chunks in pendingBakeChunks for later completion.
     /// </summary>
     private void CompletePendingBatch(Vector3Int center)
     {
@@ -240,8 +285,49 @@ public class TerrainManager : MonoBehaviour
 
             chunk.CompleteGeneration(nearPlayer);
             chunk.gameObject.SetActive(true);
+
+            // Track chunks that may have async bakes in flight
+            if (nearPlayer)
+                pendingBakeChunks.Add(chunk);
         }
         pendingChunks.Clear();
+    }
+
+    /// <summary>
+    /// Completes all pending async physics bakes from the previous batch.
+    /// Each chunk's CompletePhysicsBake() is a no-op if no bake was scheduled.
+    /// </summary>
+    private void CompletePendingBakes()
+    {
+        for (int i = 0; i < pendingBakeChunks.Count; i++)
+            pendingBakeChunks[i].CompletePhysicsBake();
+        pendingBakeChunks.Clear();
+    }
+
+    /// <summary>
+    /// Returns the LOD vertex step for a chunk based on its Chebyshev
+    /// (max-axis) horizontal distance from the load center.
+    /// </summary>
+    private int GetLodStep(Vector3Int coord, Vector3Int center)
+    {
+        int dx = Mathf.Abs(coord.x - center.x);
+        int dz = Mathf.Abs(coord.z - center.z);
+        int dist = Mathf.Max(dx, dz);
+
+        if (dist <= lod0DistanceXZ) return 1;
+        if (dist <= lod1DistanceXZ) return 2;
+        return 4;
+    }
+
+    /// <summary>
+    /// Cached comparison delegate for sorting chunk coordinates by
+    /// squared distance from sortCenter. Zero GC alloc per sort.
+    /// </summary>
+    private int CompareByDistance(Vector3Int a, Vector3Int b)
+    {
+        int ax = a.x - sortCenter.x, ay = a.y - sortCenter.y, az = a.z - sortCenter.z;
+        int bx = b.x - sortCenter.x, by = b.y - sortCenter.y, bz = b.z - sortCenter.z;
+        return (ax * ax + ay * ay + az * az).CompareTo(bx * bx + by * by + bz * bz);
     }
 
     // =================================================================
