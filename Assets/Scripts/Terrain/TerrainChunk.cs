@@ -227,7 +227,7 @@ public class TerrainChunk : MonoBehaviour
             // Schedule async physics bake on a worker thread
             var bakeJob = new PhysicsBakeJob
             {
-                meshInstanceId = mesh.GetInstanceID(),
+                meshInstanceId = mesh.GetEntityId(),
                 convex         = false
             };
             pendingBakeHandle = bakeJob.Schedule();
@@ -322,7 +322,7 @@ public class TerrainChunk : MonoBehaviour
         meshCollider.sharedMesh = null;
         if (vertCount > 0)
         {
-            Physics.BakeMesh(mesh.GetInstanceID(), false);
+            Physics.BakeMesh(mesh.GetEntityId(), false);
             meshCollider.sharedMesh = mesh;
         }
     }

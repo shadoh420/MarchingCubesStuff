@@ -7,7 +7,7 @@ using UnityEngine;
 ///
 /// Usage:
 ///   1. Apply vertices/triangles to the Mesh on the main thread.
-///   2. Schedule this job with the mesh's GetInstanceID().
+///   2. Schedule this job with the mesh's GetEntityId().
 ///   3. After the job completes, assign meshCollider.sharedMesh = mesh
 ///      on the main thread (cheap pointer swap — bake data already exists).
 ///
@@ -16,7 +16,7 @@ using UnityEngine;
 /// </summary>
 public struct PhysicsBakeJob : IJob
 {
-    public int meshInstanceId;
+    public EntityId meshInstanceId;
     public bool convex;
 
     public void Execute()

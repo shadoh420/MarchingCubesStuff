@@ -1,5 +1,47 @@
 # Changelog
 
+## Phase 9 — Terrain Interaction & Tools
+
+### New Files
+
+- **`Assets/Scripts/Player/TerrainTool.cs`**
+  First-person terrain editing tool. Raycasts from the camera center each frame and applies
+  spherical density edits via `TerrainManager.EditTerrain()` while the Attack input (LMB) is held.
+  Supports Dig mode (positive delta — remove material) and Build mode (negative delta — add material),
+  cycled with the Previous/Next actions (1/2 keys). A runtime-created semi-transparent indicator
+  sphere previews the edit radius at the hit point; colour changes per mode (red=dig, blue=build).
+
+- **`Assets/Scripts/UI/TerrainToolHUD.cs`**
+  Runtime-created screen-space overlay Canvas. Draws a center-screen crosshair (four thin arms
+  with a gap + center dot) and a bottom-center mode label ("DIG" / "BUILD") with colour coding.
+  CanvasScaler set to ScaleWithScreenSize (1920×1080 reference).
+
+### Modified Files
+
+- **`Assets/Scripts/Player/PlayerInputManager.cs`**
+  - Added `TerrainTool Tool` public reference.
+  - Cached and enabled/disabled `Attack`, `Previous`, `Next` actions from the Player map.
+  - `Update()` now feeds tool inputs: attack (gated on cursor lock), mode cycling.
+  - Added `IsCursorLocked` public property.
+
+- **`Assets/Scripts/Player/PlayerSpawnManager.cs`**
+  - Added `TerrainTool Tool` and `TerrainToolHUD HUD` public references.
+  - Spawn sequence now wires `Tool.terrainManager`, `Tool.cameraTransform`, `HUD.tool`,
+    and `InputManager.Tool` at runtime (steps 7–9).
+
+### Deprecation Fixes
+
+- **`Assets/Scripts/Jobs/PhysicsBakeJob.cs`**
+  - Changed `meshInstanceId` field from `int` to `EntityId`.
+  - Eliminates `CS0618` warning: `Physics.BakeMesh(int, bool)` is obsolete in Unity 6.
+
+- **`Assets/Scripts/Terrain/TerrainChunk.cs`**
+  - Replaced `mesh.GetInstanceID()` with `mesh.GetEntityId()` in both the async bake scheduling
+    (`CompleteGeneration`) and the synchronous bake path (`GenerateMesh`).
+  - Eliminates the matching `CS0618` warning.
+
+---
+
 ## Phase 8 — Character Controller + First-Person Camera
 
 ### New Files

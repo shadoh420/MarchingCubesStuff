@@ -13,11 +13,24 @@ A high-performance volumetric terrain engine built in **Unity 6** (6000.3.11f1),
 - **Load hysteresis** — 2-chunk buffer prevents thrashing at chunk boundaries
 - **Runtime terrain editing** — spherical brush with smooth quadratic falloff; automatically propagates across chunk borders
 
-### Phase 7: Advanced Rendering Optimizations
+### Phase 7: Advanced Rendering
+
 - **Distance-prioritized loading** — chunk coordinates sorted by squared distance from the player before generation begins; nearby chunks load first
 - **Level of Detail (LOD) via voxel striding** — three LOD tiers (step 1/2/4) reduce triangle count for distant chunks without reallocating NativeArrays
 - **True async physics baking** — `Physics.BakeMesh()` runs on a worker thread via `PhysicsBakeJob`; collider assignment is a cheap pointer swap one frame later
 - **Collider distance culling** — chunks beyond a configurable radius skip physics entirely
+
+### Phase 8: Character Controller + First-Person Camera
+- **Kinematic Character Controller** — KCC-based first-person character with walk, sprint, jump, crouch, and gravity
+- **Mouse-look camera** — configurable sensitivity, ±89° vertical clamp, follows character head
+- **Input System bridge** — all input routed through Unity Input System Player action map
+- **Spawn system** — synchronous chunk generation at spawn point, surface raycast, automatic reference wiring
+
+### Phase 9: Terrain Interaction & Tools
+- **Dig/build tool** — raycasts from camera center, calls `EditTerrain()` with configurable radius and power; LMB to dig or build
+- **Tool switching** — press 1/2 to cycle between Dig mode (remove material) and Build mode (add material)
+- **Visual feedback** — center-screen crosshair HUD, semi-transparent indicator sphere at hit point previewing edit radius, colour-coded by mode (red=dig, blue=build)
+- **Mode label** — bottom-center HUD text showing current mode with colour coding
 
 ## Project Structure
 
@@ -28,9 +41,17 @@ Assets/
       DensityJob.cs          # Burst job: 3D simplex noise density sampling
       MarchingCubesJob.cs    # Burst job: isosurface extraction
       PhysicsBakeJob.cs      # IJob: async Physics.BakeMesh on worker thread
+    Player/
+      PlayerCharacterController.cs  # KCC first-person character controller
+      FirstPersonCamera.cs          # Mouse-look camera
+      PlayerInputManager.cs         # Input System bridge
+      PlayerSpawnManager.cs         # Spawn system with sync chunk generation
+      TerrainTool.cs                # Dig/build terrain tool with indicator
     Terrain/
       TerrainManager.cs      # Infinite terrain orchestrator, object pool, LOD tiers
       TerrainChunk.cs        # Per-chunk lifecycle, NativeArray management, job scheduling
+    UI/
+      TerrainToolHUD.cs      # Crosshair + mode label HUD
     MarchingCubesTables.cs   # Static Marching Cubes lookup tables
   Materials/                 # Terrain materials (triplanar dirt, grass, stone, etc.)
   Scenes/
@@ -78,6 +99,7 @@ NativeArrays are always allocated at LOD0 capacity. Lower LODs write to a smalle
 - **Universal Render Pipeline** (URP 17.x)
 - **Burst** + **Collections** + **Mathematics** packages (pulled in by default)
 - **Input System** 1.19+
+- **Kinematic Character Controller** asset (Unity Asset Store)
 
 ## Configuration
 

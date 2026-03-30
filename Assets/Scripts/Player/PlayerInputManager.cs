@@ -18,6 +18,7 @@ public class PlayerInputManager : MonoBehaviour
     [Header("References")]
     public PlayerCharacterController Character;
     public FirstPersonCamera          Camera;
+    public TerrainTool                Tool;
 
     // ── Input asset ─────────────────────────────────────────────────
     [Header("Input")]
@@ -35,8 +36,14 @@ public class PlayerInputManager : MonoBehaviour
     private InputAction _jumpAction;
     private InputAction _sprintAction;
     private InputAction _crouchAction;
+    private InputAction _attackAction;
+    private InputAction _previousAction;
+    private InputAction _nextAction;
 
     private bool _cursorLocked = true;
+
+    /// <summary>True when the cursor is locked for gameplay.</summary>
+    public bool IsCursorLocked => _cursorLocked;
 
     // =================================================================
     //  Lifecycle
@@ -53,6 +60,9 @@ public class PlayerInputManager : MonoBehaviour
             _jumpAction   = playerMap.FindAction("Jump",   true);
             _sprintAction = playerMap.FindAction("Sprint", true);
             _crouchAction = playerMap.FindAction("Crouch", true);
+            _attackAction   = playerMap.FindAction("Attack",   true);
+            _previousAction = playerMap.FindAction("Previous", true);
+            _nextAction     = playerMap.FindAction("Next",     true);
         }
     }
 
@@ -63,6 +73,9 @@ public class PlayerInputManager : MonoBehaviour
         _jumpAction?.Enable();
         _sprintAction?.Enable();
         _crouchAction?.Enable();
+        _attackAction?.Enable();
+        _previousAction?.Enable();
+        _nextAction?.Enable();
 
         LockCursor();
     }
@@ -74,6 +87,9 @@ public class PlayerInputManager : MonoBehaviour
         _jumpAction?.Disable();
         _sprintAction?.Disable();
         _crouchAction?.Disable();
+        _attackAction?.Disable();
+        _previousAction?.Disable();
+        _nextAction?.Disable();
 
         UnlockCursor();
     }
@@ -107,6 +123,18 @@ public class PlayerInputManager : MonoBehaviour
         };
 
         Character.SetInputs(ref inputs);
+
+        // ── Feed terrain tool inputs ──────────────────────────────────
+        if (Tool != null)
+        {
+            bool attack = _cursorLocked && _attackAction != null && _attackAction.IsPressed();
+            Tool.SetAttackInput(attack);
+
+            if (_previousAction != null && _previousAction.WasPressedThisFrame())
+                Tool.CycleMode(-1);
+            if (_nextAction != null && _nextAction.WasPressedThisFrame())
+                Tool.CycleMode(1);
+        }
     }
 
     // =================================================================

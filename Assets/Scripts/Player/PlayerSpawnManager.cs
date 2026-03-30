@@ -25,6 +25,8 @@ public class PlayerSpawnManager : MonoBehaviour
     public PlayerCharacterController  Character;
     public FirstPersonCamera          Camera;
     public PlayerInputManager         InputManager;
+    public TerrainTool                  Tool;
+    public TerrainToolHUD               HUD;
 
     // ── Spawn settings ──────────────────────────────────────────────
     [Header("Spawn Settings")]
@@ -91,6 +93,26 @@ public class PlayerSpawnManager : MonoBehaviour
         if (TerrainManager != null && Character != null)
         {
             TerrainManager.player = Character.transform;
+        }
+
+        // ── 7. Wire up terrain tool ──────────────────────────────────
+        if (Tool != null)
+        {
+            if (Tool.terrainManager == null) Tool.terrainManager = TerrainManager;
+            if (Tool.cameraTransform == null && Camera != null)
+                Tool.cameraTransform = Camera.transform;
+        }
+
+        // ── 8. Wire up terrain tool HUD ──────────────────────────────
+        if (HUD != null && Tool != null)
+        {
+            if (HUD.tool == null) HUD.tool = Tool;
+        }
+
+        // ── 9. Wire tool into input manager ──────────────────────────
+        if (InputManager != null && Tool != null)
+        {
+            if (InputManager.Tool == null) InputManager.Tool = Tool;
         }
     }
 
