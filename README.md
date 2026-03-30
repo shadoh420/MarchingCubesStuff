@@ -1,6 +1,6 @@
 # MCProject — Volumetric Voxel Terrain Engine
 
-A high-performance volumetric terrain engine built in **Unity 6** (6000.3.11f1), inspired by games like *Deep Rock Galactic*. Fully destructible/constructible terrain powered by Marching Cubes, Burst-compiled jobs, and an async generation pipeline.
+A high-performance volumetric terrain engine built in **Unity 6** (6000.3.11f1), inspired by games like *Deep Rock Galactic*. Fully destructible/constructible terrain powered by Marching Cubes, Burst-compiled jobs, and an async generation pipeline. Currently evolving into a networked multiplayer arena game with terrain-deforming projectiles.
 
 ## Features
 
@@ -30,32 +30,57 @@ A high-performance volumetric terrain engine built in **Unity 6** (6000.3.11f1),
 - **Dig/build tool** — raycasts from camera center, calls `EditTerrain()` with configurable radius and power; LMB to dig or build
 - **Tool switching** — press 1/2 to cycle between Dig mode (remove material) and Build mode (add material)
 - **Visual feedback** — center-screen crosshair HUD, semi-transparent indicator sphere at hit point previewing edit radius, colour-coded by mode (red=dig, blue=build)
-- **Mode label** — bottom-center HUD text showing current mode with colour coding
+- **Admin-gated** — dig/build tools disabled by default (`AdminToolsEnabled` flag on PlayerSpawnManager)
+
+### Phase 10: Combat — Fireball Projectile System
+- **Fireball projectile** — physics-driven Rigidbody with configurable speed (25 m/s), gravity, and lifetime
+- **Terrain deformation on impact** — carves craters via `TerrainManager.EditTerrain()` with configurable radius and delta
+- **PyroParticles VFX** — trail/glow from Fireball prefab, explosion VFX on impact (physics disabled, visual only)
+- **Launch audio** — configurable AudioClip played from a 2D AudioSource on the launcher
+- **Cooldown system** — configurable fire rate (1.25s default), exposed as `CooldownProgress` for HUD
+- **Self-damage** — 50% splash damage on self (Quake-style rocket jumping)
+- **Combat HUD** — center crosshair with cooldown colour feedback (white→orange)
+- **Mutually exclusive modes** — admin tools (dig/build) and combat weapon use the same input; never both
+
+### Phase 11: Health & Game Loop
+- **Player health** — HP system (100 max) with `TakeDamage()`, distance-based splash falloff, death, and timed respawn (3s)
+- **Death/respawn cycle** — death disables KCC motor, weapon, and visuals; respawn raycasts terrain surface and teleports
+- **Health HUD** — bottom-left health bar (green→red at low HP), damage flash overlay, "RESPAWNING..." death text
+- **Player visuals** — capsule mesh matching KCC dimensions, hidden for local first-person, ready for multiplayer visibility
+- **All damage tuneable from Inspector** — DirectDamage, SplashDamage, SplashRadius, SelfDamageMultiplier on ProjectileLauncher
 
 ## Project Structure
 
 ```
 Assets/
   Scripts/
+    Combat/
+      Fireball.cs                # Projectile: physics, terrain deformation, splash damage
+      ProjectileLauncher.cs      # Fire from camera center, cooldown, audio, VFX attachment
     Jobs/
-      DensityJob.cs          # Burst job: 3D simplex noise density sampling
-      MarchingCubesJob.cs    # Burst job: isosurface extraction
-      PhysicsBakeJob.cs      # IJob: async Physics.BakeMesh on worker thread
+      DensityJob.cs              # Burst job: 3D simplex noise density sampling
+      MarchingCubesJob.cs        # Burst job: isosurface extraction
+      PhysicsBakeJob.cs          # IJob: async Physics.BakeMesh on worker thread
     Player/
       PlayerCharacterController.cs  # KCC first-person character controller
       FirstPersonCamera.cs          # Mouse-look camera
-      PlayerInputManager.cs         # Input System bridge
-      PlayerSpawnManager.cs         # Spawn system with sync chunk generation
-      TerrainTool.cs                # Dig/build terrain tool with indicator
+      PlayerHealth.cs               # HP, damage, death, respawn
+      PlayerInputManager.cs         # Input System bridge (combat + admin routing)
+      PlayerSpawnManager.cs         # Spawn system, component wiring, admin toggle
+      PlayerVisuals.cs              # Capsule mesh for multiplayer visibility
+      TerrainTool.cs                # Dig/build terrain tool (admin only)
     Terrain/
-      TerrainManager.cs      # Infinite terrain orchestrator, object pool, LOD tiers
-      TerrainChunk.cs        # Per-chunk lifecycle, NativeArray management, job scheduling
+      TerrainManager.cs          # Infinite terrain orchestrator, object pool, LOD tiers
+      TerrainChunk.cs            # Per-chunk lifecycle, NativeArray management, job scheduling
     UI/
-      TerrainToolHUD.cs      # Crosshair + mode label HUD
-    MarchingCubesTables.cs   # Static Marching Cubes lookup tables
-  Materials/                 # Terrain materials (triplanar dirt, grass, stone, etc.)
+      CombatHUD.cs               # Crosshair + cooldown indicator
+      HealthHUD.cs               # Health bar, damage flash, death overlay
+      TerrainToolHUD.cs          # Crosshair + mode label (admin only)
+    MarchingCubesTables.cs       # Static Marching Cubes lookup tables
+  PyroParticles/                 # Third-party fire/explosion VFX asset
+  Materials/                     # Terrain materials (triplanar dirt, grass, stone, etc.)
   Scenes/
-    SampleScene.unity        # Main scene
+    SampleScene.unity            # Main scene
 ```
 
 ## Architecture Overview
@@ -81,6 +106,11 @@ TerrainChunk (MonoBehaviour, pooled)
   |-- CompleteGeneration(): complete jobs, apply mesh, schedule async bake
   |-- CompletePhysicsBake(): finalize collider
   |-- GenerateMesh(): synchronous path for terrain edits
+
+ProjectileLauncher → Fireball → TerrainManager.EditTerrain()
+  |-- On fire: spawn Fireball + PyroParticles VFX child
+  |-- On collision: EditTerrain() + SpawnExplosion() + ApplySplashDamage()
+  |-- PlayerHealth.TakeDamage() with distance falloff + self-damage reduction
 ```
 
 ## LOD System
@@ -100,6 +130,7 @@ NativeArrays are always allocated at LOD0 capacity. Lower LODs write to a smalle
 - **Burst** + **Collections** + **Mathematics** packages (pulled in by default)
 - **Input System** 1.19+
 - **Kinematic Character Controller** asset (Unity Asset Store)
+- **PyroParticles** asset (Unity Asset Store) — fire/explosion VFX
 
 ## Configuration
 
@@ -115,6 +146,21 @@ All tuning is exposed on the `TerrainManager` Inspector:
 | LOD0 Distance XZ | 2 | Full-resolution radius |
 | LOD1 Distance XZ | 4 | Half-resolution radius (beyond = LOD2) |
 
+Combat tuning is on the `ProjectileLauncher` Inspector:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Cooldown | 1.25s | Seconds between shots |
+| Speed Override | 25 | Fireball speed (m/s) |
+| Gravity Override | (0,0,0) | Custom gravity vector |
+| Crater Radius | 1.5 | Terrain deformation radius |
+| Crater Delta | 30 | Density edit strength |
+| Direct Damage | 40 | Damage on direct hit |
+| Splash Damage | 25 | Max splash damage at center |
+| Splash Radius | 4 | Splash damage falloff radius |
+| Self Damage Multiplier | 0.5 | Self-splash reduction |
+
 ## License
 
 Private repository. All rights reserved.
+

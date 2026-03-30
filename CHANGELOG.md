@@ -1,5 +1,74 @@
 # Changelog
 
+## Phase 10 — Projectile System (Fireballs)
+
+### New Files
+
+- **`Assets/Scripts/Combat/Fireball.cs`**
+  Physics-driven fireball projectile. Rigidbody with configurable speed (25 m/s), zero gravity
+  (straight flight), and max lifetime (8s). On terrain collision: carves a crater via
+  `TerrainManager.EditTerrain()` (radius=1.5, delta=30, tuneable in Inspector) and spawns
+  PyroParticles `FireExplosion` VFX. Self-inflicted splash damage reduced to 50% (Quake-style
+  rocket jumping). Splash damage uses `PlayerHealth.TakeDamage()` with distance falloff.
+
+- **`Assets/Scripts/Combat/ProjectileLauncher.cs`**
+  First-person projectile launcher. Fires from camera center with configurable cooldown (1.25s),
+  spawn offset (1.5 units forward to clear player capsule). Exposes `CooldownProgress` (0–1)
+  for HUD display. Creates fireball instances with PyroParticles trail VFX attached as child
+  (Pyro physics disabled). Includes fallback orange-sphere visual when no prefab is assigned.
+  Launch audio via configurable `AudioClip` (played from a 2D AudioSource on the launcher).
+  Input via `SetFireInput()` from PlayerInputManager (same pattern as TerrainTool).
+
+- **`Assets/Scripts/UI/CombatHUD.cs`**
+  Runtime-created screen-space overlay Canvas (sort order 110, above TerrainToolHUD at 100).
+  Center crosshair with four arms + dot, colour-lerps between ready (white) and cooldown (orange)
+  states. CanvasScaler at 1920×1080 reference.
+
+### Modified Files
+
+- **`Assets/Scripts/Player/PlayerInputManager.cs`**
+  - Added `public ProjectileLauncher Launcher` field.
+  - Attack input routing is now mutually exclusive: admin mode sends LMB to TerrainTool and
+    explicitly sends `false` to Launcher; combat mode sends LMB to Launcher only.
+
+- **`Assets/Scripts/Player/PlayerSpawnManager.cs`**
+  - Added `ProjectileLauncher Launcher`, `CombatHUD CombatHudComponent`, `PlayerHealth Health`,
+    `PlayerVisuals Visuals`, `HealthHUD HealthHudComponent` references.
+  - Added `bool AdminToolsEnabled` (default=false). When false, `TerrainTool` and
+    `TerrainToolHUD` components are disabled at spawn.
+  - Spawn sequence extended with steps 10–14.
+
+---
+
+## Phase 11 — Health & Game Loop (Partial)
+
+### New Files
+
+- **`Assets/Scripts/Player/PlayerHealth.cs`**
+  Player health component: MaxHP (100), TakeDamage(), Heal(), Die(), Respawn(). Death disables
+  KCC motor, launcher, and player visuals. After RespawnDelay (3s), raycasts down to find terrain
+  surface and teleports the player back. Events: OnDamaged, OnDied, OnRespawned for HUD binding.
+
+- **`Assets/Scripts/Player/PlayerVisuals.cs`**
+  Creates a capsule mesh child matching KCC dimensions. Hidden for local first-person player
+  (`HideForLocalPlayer` flag), visible for remote players in multiplayer. `SetColor()` API for
+  team colours. `SetVisible()` called by PlayerHealth on death/respawn.
+
+- **`Assets/Scripts/UI/HealthHUD.cs`**
+  Runtime-created overlay Canvas (sort order 120). Bottom-left health bar with green→red colour
+  at low HP, HP text overlay, full-screen red damage flash on hit, and "RESPAWNING..." death
+  overlay. Event-driven via PlayerHealth subscriptions.
+
+### Architecture Notes
+
+- **Admin mode exclusive**: Admin tools (dig/build) and combat weapon are mutually exclusive.
+  LMB goes to TerrainTool in admin mode, to ProjectileLauncher in combat mode.
+- **Self-damage**: 50% splash damage on self, enabling Quake-style rocket jumping.
+- **Death/Respawn**: Self-contained in PlayerHealth — no external coroutine needed.
+  Respawn uses same terrain raycast logic as initial spawn.
+
+---
+
 ## Phase 9 — Terrain Interaction & Tools
 
 ### New Files

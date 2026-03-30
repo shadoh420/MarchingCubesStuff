@@ -27,6 +27,16 @@ public class PlayerSpawnManager : MonoBehaviour
     public PlayerInputManager         InputManager;
     public TerrainTool                  Tool;
     public TerrainToolHUD               HUD;
+    public ProjectileLauncher           Launcher;
+    public CombatHUD                    CombatHudComponent;
+    public PlayerHealth                 Health;
+    public PlayerVisuals                Visuals;
+    public HealthHUD                    HealthHudComponent;
+
+    [Header("Admin")]
+    [Tooltip("When false, TerrainTool and TerrainToolHUD are disabled at spawn (regular player). " +
+             "Set to true for dev/admin access to dig/build tools.")]
+    public bool AdminToolsEnabled = false;
 
     // ── Spawn settings ──────────────────────────────────────────────
     [Header("Spawn Settings")]
@@ -95,24 +105,85 @@ public class PlayerSpawnManager : MonoBehaviour
             TerrainManager.player = Character.transform;
         }
 
-        // ── 7. Wire up terrain tool ──────────────────────────────────
+        // ── 7. Wire up terrain tool (admin only) ──────────────────────
         if (Tool != null)
         {
-            if (Tool.terrainManager == null) Tool.terrainManager = TerrainManager;
-            if (Tool.cameraTransform == null && Camera != null)
-                Tool.cameraTransform = Camera.transform;
+            if (AdminToolsEnabled)
+            {
+                if (Tool.terrainManager == null) Tool.terrainManager = TerrainManager;
+                if (Tool.cameraTransform == null && Camera != null)
+                    Tool.cameraTransform = Camera.transform;
+            }
+            else
+            {
+                Tool.enabled = false;
+                Debug.Log("[PlayerSpawnManager] TerrainTool disabled (AdminToolsEnabled=false).");
+            }
         }
 
-        // ── 8. Wire up terrain tool HUD ──────────────────────────────
-        if (HUD != null && Tool != null)
+        // ── 8. Wire up terrain tool HUD (admin only) ──────────────────
+        if (HUD != null)
         {
-            if (HUD.tool == null) HUD.tool = Tool;
+            if (AdminToolsEnabled && Tool != null)
+            {
+                if (HUD.tool == null) HUD.tool = Tool;
+            }
+            else
+            {
+                HUD.enabled = false;
+                Debug.Log("[PlayerSpawnManager] TerrainToolHUD disabled (AdminToolsEnabled=false).");
+            }
         }
 
         // ── 9. Wire tool into input manager ──────────────────────────
-        if (InputManager != null && Tool != null)
+        if (InputManager != null && Tool != null && AdminToolsEnabled)
         {
             if (InputManager.Tool == null) InputManager.Tool = Tool;
+        }
+
+        // ── 10. Wire up projectile launcher ─────────────────────────
+        if (Launcher != null)
+        {
+            if (Launcher.terrainManager == null) Launcher.terrainManager = TerrainManager;
+            if (Launcher.cameraTransform == null && Camera != null)
+                Launcher.cameraTransform = Camera.transform;
+            if (Launcher.playerObject == null && Character != null)
+                Launcher.playerObject = Character.gameObject;
+            if (Launcher.playerCollider == null && Character != null)
+            {
+                Collider col = Character.GetComponent<Collider>();
+                if (col != null) Launcher.playerCollider = col;
+            }
+        }
+
+        // ── 11. Wire launcher into input manager ────────────────────
+        if (InputManager != null && Launcher != null)
+        {
+            if (InputManager.Launcher == null) InputManager.Launcher = Launcher;
+        }
+
+        // ── 12. Wire up combat HUD ───────────────────────────────
+        if (CombatHudComponent != null && Launcher != null)
+        {
+            if (CombatHudComponent.launcher == null)
+                CombatHudComponent.launcher = Launcher;
+        }
+
+        // ── 13. Wire up player health ────────────────────────────────
+        if (Health != null)
+        {
+            if (Health.Character == null) Health.Character = Character;
+            if (Health.Camera == null) Health.Camera = Camera;
+            if (Health.TerrainManager == null) Health.TerrainManager = TerrainManager;
+            if (Health.Launcher == null) Health.Launcher = Launcher;
+            if (Health.Visuals == null && Visuals != null) Health.Visuals = Visuals;
+        }
+
+        // ── 14. Wire up health HUD ───────────────────────────────────
+        if (HealthHudComponent != null && Health != null)
+        {
+            if (HealthHudComponent.playerHealth == null)
+                HealthHudComponent.playerHealth = Health;
         }
     }
 

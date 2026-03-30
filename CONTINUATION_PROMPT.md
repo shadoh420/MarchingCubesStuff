@@ -52,9 +52,42 @@ After pulling, add the following components to your scene:
 
 ## What to Implement Next
 
-### Phase 10: Chunk Border Stitching
-- Address visible seams between chunks at different LOD levels (only relevant if `viewDistanceXZ > colliderDistanceXZ` in the future). Currently LOD is effectively disabled within visible range.
-- Propose and implement a solution (shared-edge density sampling, transition meshes, or skirt geometry).
+The MVP goal is a **networked multiplayer arena** where players shoot fireballs at each other,
+deforming the voxel terrain on impact. Implement one phase at a time in order.
+
+### Phase 10: Projectile System (Fireballs)
+- **Fireball prefab** — physics-driven projectile with VFX (particle trail + glow). Configurable speed, gravity, lifetime.
+- **Shooting mechanic** — fire from camera center. Either add a new tool mode to TerrainTool or a separate `ProjectileLauncher` component with its own input action (e.g., right-click or a dedicated "Fire" action).
+
+USER CLARIFICATION: the dig/build tools and HUD are for testing and debugging purposes, they won't be available in the "arena" mode. So they need to be removed for regular players but remain available for admins or devs in the future. Also, I grabbed a free fireball pack from the asset store which is located in Assets\PyroParticles
+
+- **Terrain deformation on impact** — on terrain collision, call `TerrainManager.EditTerrain()` at impact point with a large crater radius/delta. Destroy the projectile.
+- **Player hit detection** — on player collision, apply damage (prepare for Phase 11 health system). Destroy the projectile.
+- **Muzzle + explosion VFX** — simple particle effects for launch and impact.
+
+### Phase 11: Health & Game Loop
+- **Player health component** — `PlayerHealth.cs` with max HP, TakeDamage(), Die(), Respawn(). Networked later.
+- **HUD** — health bar, damage flash, kill feed text.
+- **Death & respawn** — on death, disable character + camera, wait, then respawn on terrain surface (reuse `PlayerSpawnManager` logic).
+- **Basic round structure** — free-for-all deathmatch or simple timer-based rounds.
+
+### Phase 12: Networked Multiplayer
+- **Unity Netcode for GameObjects (NGO)** — add `com.unity.netcode.gameobjects` package.
+- **NetworkManager + connection UI** — host/join screen, relay (Unity Relay or direct IP).
+- **Networked player** — player prefab with `NetworkObject`, owner-authoritative movement via `ClientNetworkTransform` (or custom sync compatible with KCC).
+- **Networked terrain edits** — client requests edit → `ServerRpc` → server calls `EditTerrain()` → `ClientRpc` broadcasts the edit (position, radius, delta) to all clients for local replay.
+- **Networked projectiles** — server-authoritative spawn + hit detection. Clients see interpolated ghost.
+- **Networked health/damage** — server-authoritative HP, damage RPCs, death/respawn sync.
+- **Terrain state sync for late joiners** — delta log or full density snapshot for clients joining mid-game.
+
+### Phase 13: Polish & Performance
+- **Bandwidth optimization** — batch/compress terrain edit RPCs, delta encoding for density changes.
+- **Lag compensation** — server-side rewind for projectile hit validation.
+- **Visual polish** — explosion VFX, terrain dust particles, better UI, sound effects.
+- **Stress testing** — multiple clients, profiling, frame budget analysis.
+
+### Deferred / Removed
+- ~~**Phase 10 (old): Chunk Border Stitching**~~ — LOD is forced to 0 for all visible chunks; seams are not an issue. Revisit only if LOD is re-enabled for distant chunks in the future.
 
 ## System Constraints (Do NOT break these)
 - Soft-cancel via generation counter (no StopCoroutine overhead)
@@ -69,8 +102,9 @@ After pulling, add the following components to your scene:
 
 ## Instructions
 - Read all existing scripts in the workspace before writing any code.
-- Implement one phase at a time, starting with Phase 10.
+- Implement one phase at a time, starting with **Phase 10 (Projectile System)**.
 - Commit and push to origin/master after each phase.
 - Use the Input System (not legacy `Input.GetAxis`).
 - Follow the existing code style (XML doc comments, region separators, consistent naming).
 - Ask before proceeding to the next phase.
+- The MVP goal is a networked multiplayer fireball arena — keep all decisions oriented toward that.

@@ -19,6 +19,7 @@ public class PlayerInputManager : MonoBehaviour
     public PlayerCharacterController Character;
     public FirstPersonCamera          Camera;
     public TerrainTool                Tool;
+    public ProjectileLauncher         Launcher;
 
     // ── Input asset ─────────────────────────────────────────────────
     [Header("Input")]
@@ -124,16 +125,32 @@ public class PlayerInputManager : MonoBehaviour
 
         Character.SetInputs(ref inputs);
 
-        // ── Feed terrain tool inputs ──────────────────────────────────
-        if (Tool != null)
+        // ── Feed combat / tool inputs ─────────────────────────────────
+        bool attack = _cursorLocked && _attackAction != null && _attackAction.IsPressed();
+
+        // Admin mode: route attack to terrain tool, disable weapon
+        // Combat mode: route attack to launcher
+        bool adminToolActive = Tool != null && Tool.isActiveAndEnabled;
+
+        if (adminToolActive)
         {
-            bool attack = _cursorLocked && _attackAction != null && _attackAction.IsPressed();
+            // Admin tools get LMB
             Tool.SetAttackInput(attack);
 
             if (_previousAction != null && _previousAction.WasPressedThisFrame())
                 Tool.CycleMode(-1);
             if (_nextAction != null && _nextAction.WasPressedThisFrame())
                 Tool.CycleMode(1);
+
+            // Ensure launcher does NOT fire in admin mode
+            if (Launcher != null)
+                Launcher.SetFireInput(false);
+        }
+        else
+        {
+            // Combat mode: LMB fires projectiles
+            if (Launcher != null)
+                Launcher.SetFireInput(attack);
         }
     }
 
