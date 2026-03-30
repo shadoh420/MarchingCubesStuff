@@ -1,18 +1,58 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// Spawns and manages a grid of TerrainChunk objects.
-/// Provides world-space density editing that automatically handles
-/// border consistency across adjacent chunks.
+/// Manages an infinite volumetric terrain around the player.
+///
+/// ARCHITECTURE:
+///   - Tracks active chunks in a Dictionary&lt;Vector3Int, TerrainChunk&gt;.
+///   - Maintains a Queue-based Object Pool of deactivated TerrainChunk
+///     GameObjects so we never destroy/re-allocate them.
+///   - Every frame, checks if the player has moved far enough from the
+///     last load center. When they do, a coroutine evaluates which chunks
+///     to load/unload using a two-phase async pipeline.
+///
+/// ASYNC PIPELINE (per batch of chunks):
+///   Frame N  : BeginGeneration() — fills density + schedules Burst job.
+///   Frame N+1: CompleteGeneration() — applies mesh + optionally bakes collider.
+///   This lets Burst jobs run on worker threads during the frame gap.
+///
+/// MEMORY CONTRACT:
+///   - TerrainChunk.Awake() allocates density[], Mesh, and persistent
+///     NativeArrays ONCE. All are reused across pool cycles.
+///   - Shared look-up tables are ref-counted and disposed on last OnDestroy.
 /// </summary>
 public class TerrainManager : MonoBehaviour
 {
-    // ── Grid dimensions (in chunks) ──────────────────────────────────
-    [Header("Grid Size (chunks)")]
-    public int gridSizeX = 4;
-    public int gridSizeY = 1;
-    public int gridSizeZ = 4;
+    // ── Player reference ─────────────────────────────────────────────
+    [Header("Player")]
+    [Tooltip("The Transform the terrain follows. If null, searches for 'Player' tag at Start.")]
+    public Transform player;
+
+    // ── View distance ────────────────────────────────────────────────
+    [Header("View Distance (chunks)")]
+    [Tooltip("Horizontal radius in chunk coordinates around the player.")]
+    public int viewDistanceXZ = 4;
+    [Tooltip("Vertical radius in chunk coordinates around the player.")]
+    public int viewDistanceY  = 1;
+
+    // ── Performance ──────────────────────────────────────────────────
+    [Header("Performance")]
+    [Tooltip("Max chunks to schedule per batch. Jobs run on workers during the yield, then complete next frame.")]
+    public int chunksPerFrame = 4;
+    [Tooltip("Max chunks to deactivate per frame during the unload phase.")]
+    public int unloadsPerFrame = 32;
+    [Tooltip("Number of inactive chunks to pre-instantiate in the pool at Start.")]
+    public int poolWarmupCount = 16;
+    [Tooltip("Player must move this many chunks from the last load center before a new load pass triggers. Prevents constant reloads while moving.")]
+    public int loadHysteresis = 2;
+
+    [Header("Collider Distance (chunks)")]
+    [Tooltip("Horizontal radius within which MeshColliders are baked. Beyond this, chunks are visual-only (huge perf win).")]
+    public int colliderDistanceXZ = 4;
+    [Tooltip("Vertical radius within which MeshColliders are baked.")]
+    public int colliderDistanceY  = 2;
 
     // ── Visuals ──────────────────────────────────────────────────────
     [Header("Material")]
@@ -25,8 +65,19 @@ public class TerrainManager : MonoBehaviour
     public float surfaceY   = 8f;
 
     // ── Internal state ───────────────────────────────────────────────
-    private readonly Dictionary<Vector3Int, TerrainChunk> chunks =
+    private readonly Dictionary<Vector3Int, TerrainChunk> activeChunks =
         new Dictionary<Vector3Int, TerrainChunk>();
+
+    private readonly Queue<TerrainChunk> chunkPool =
+        new Queue<TerrainChunk>();
+
+    private Vector3Int lastLoadCenter = new Vector3Int(int.MinValue, 0, 0);
+    private Coroutine  loadingRoutine;
+    private int        loadGeneration;
+
+    // Reusable lists to avoid GC alloc every update
+    private readonly List<Vector3Int> coordsToRemove = new List<Vector3Int>();
+    private readonly List<TerrainChunk> pendingChunks = new List<TerrainChunk>();
 
     // =================================================================
     //  Lifecycle
@@ -34,38 +85,225 @@ public class TerrainManager : MonoBehaviour
 
     private void Start()
     {
-        GenerateGrid();
-    }
-
-    // =================================================================
-    //  Grid generation
-    // =================================================================
-
-    private void GenerateGrid()
-    {
-        for (int x = 0; x < gridSizeX; x++)
-        for (int y = 0; y < gridSizeY; y++)
-        for (int z = 0; z < gridSizeZ; z++)
+        if (player == null)
         {
-            SpawnChunk(new Vector3Int(x, y, z));
+            GameObject go = GameObject.FindWithTag("Player");
+            if (go != null) player = go.transform;
         }
 
-        Debug.Log($"[TerrainManager] Spawned {chunks.Count} chunks " +
-                  $"({gridSizeX}×{gridSizeY}×{gridSizeZ}).");
+        if (player == null)
+        {
+            Debug.LogWarning("[TerrainManager] No player assigned and none found with 'Player' tag. " +
+                             "Using this Transform as the center.");
+            player = transform;
+        }
+
+        WarmUpPool();
+
+        // Force an immediate terrain load around the starting position
+        lastLoadCenter = WorldToChunkCoord(player.position);
+        loadGeneration++;
+        loadingRoutine = StartCoroutine(LoadTerrain(lastLoadCenter, loadGeneration));
     }
 
-    private void SpawnChunk(Vector3Int coord)
+    private void Update()
     {
-        GameObject go = new GameObject($"Chunk_{coord.x}_{coord.y}_{coord.z}");
-        go.transform.SetParent(transform, false);
-        go.transform.position = new Vector3(
-            coord.x * TerrainChunk.ChunkSize,
-            coord.y * TerrainChunk.ChunkSize,
-            coord.z * TerrainChunk.ChunkSize);
+        if (player == null) return;
 
+        Vector3Int currentCoord = WorldToChunkCoord(player.position);
+
+        // Only trigger a new load pass when the player has moved far enough
+        // from where we last centered the terrain. This prevents constant
+        // coroutine restarts while moving continuously.
+        int dx = Mathf.Abs(currentCoord.x - lastLoadCenter.x);
+        int dy = Mathf.Abs(currentCoord.y - lastLoadCenter.y);
+        int dz = Mathf.Abs(currentCoord.z - lastLoadCenter.z);
+
+        if (dx >= loadHysteresis || dy >= loadHysteresis || dz >= loadHysteresis)
+        {
+            lastLoadCenter = currentCoord;
+
+            // Bump generation — any in-flight coroutine will see the mismatch
+            // at its next yield point and exit cleanly (no hard StopCoroutine).
+            loadGeneration++;
+            loadingRoutine = StartCoroutine(LoadTerrain(currentCoord, loadGeneration));
+        }
+    }
+
+    // =================================================================
+    //  Terrain loading coroutine
+    // =================================================================
+
+    /// <summary>
+    /// 1. Deactivate and pool any active chunks that fell outside the
+    ///    view distance (batched across frames).
+    /// 2. Loop through the 3-D radius around <paramref name="center"/>.
+    ///    For each missing coordinate:
+    ///      a) BeginGeneration() — fill density + schedule Burst job.
+    ///      b) After a batch, yield so jobs run on worker threads.
+    ///      c) Next frame: CompleteGeneration() + SetActive(true).
+    /// </summary>
+    private IEnumerator LoadTerrain(Vector3Int center, int generation)
+    {
+        // ── Phase 1: Unload far-away chunks (batched) ────────────────
+        coordsToRemove.Clear();
+
+        foreach (var kvp in activeChunks)
+        {
+            Vector3Int coord = kvp.Key;
+            int dx = Mathf.Abs(coord.x - center.x);
+            int dy = Mathf.Abs(coord.y - center.y);
+            int dz = Mathf.Abs(coord.z - center.z);
+
+            if (dx > viewDistanceXZ || dy > viewDistanceY || dz > viewDistanceXZ)
+                coordsToRemove.Add(coord);
+        }
+
+        int unloaded = 0;
+        for (int i = 0; i < coordsToRemove.Count; i++)
+        {
+            ReturnChunkToPool(coordsToRemove[i]);
+            unloaded++;
+
+            if (unloaded >= unloadsPerFrame)
+            {
+                unloaded = 0;
+                if (generation != loadGeneration) yield break;
+                yield return null;
+            }
+        }
+
+        // ── Phase 2: Load missing chunks (schedule → yield → complete) ──
+        pendingChunks.Clear();
+
+        for (int x = -viewDistanceXZ; x <= viewDistanceXZ; x++)
+        for (int y = -viewDistanceY;  y <= viewDistanceY;  y++)
+        for (int z = -viewDistanceXZ; z <= viewDistanceXZ; z++)
+        {
+            Vector3Int coord = new Vector3Int(center.x + x, center.y + y, center.z + z);
+
+            if (activeChunks.ContainsKey(coord))
+                continue;
+
+            // ── Skip chunks guaranteed to produce zero geometry ─────────
+            float chunkWorldYMin = coord.y * TerrainChunk.ChunkSize;
+            float chunkWorldYMax = chunkWorldYMin + TerrainChunk.ChunkSize;
+            if (chunkWorldYMin > surfaceY + amplitude ||
+                chunkWorldYMax < surfaceY - amplitude)
+            {
+                activeChunks[coord] = null;
+                continue;
+            }
+
+            // ── Phase A: schedule the Burst job (non-blocking) ────────
+            TerrainChunk chunk = GetChunkFromPool();
+            chunk.gameObject.name = $"Chunk_{coord.x}_{coord.y}_{coord.z}";
+            chunk.BeginGeneration(coord, terrainMaterial, noiseScale, amplitude, surfaceY);
+
+            activeChunks[coord] = chunk;
+            pendingChunks.Add(chunk);
+
+            // When we've filled a batch, yield so the Burst jobs can
+            // execute on worker threads across the frame boundary.
+            if (pendingChunks.Count >= chunksPerFrame)
+            {
+                yield return null;  // ← jobs run on workers during this gap
+
+                if (generation != loadGeneration) yield break;
+
+                // ── Phase B: complete the batch + activate ─────────────
+                CompletePendingBatch(center);
+            }
+        }
+
+        // Complete any remaining partial batch
+        if (pendingChunks.Count > 0)
+            CompletePendingBatch(center);
+
+        loadingRoutine = null;
+    }
+
+    /// <summary>
+    /// Completes all pending Burst jobs, applies their meshes, activates
+    /// the GameObjects, and optionally bakes colliders for nearby chunks.
+    /// </summary>
+    private void CompletePendingBatch(Vector3Int center)
+    {
+        for (int i = 0; i < pendingChunks.Count; i++)
+        {
+            TerrainChunk chunk = pendingChunks[i];
+            Vector3Int c = chunk.ChunkCoord;
+
+            bool nearPlayer = Mathf.Abs(c.x - center.x) <= colliderDistanceXZ &&
+                              Mathf.Abs(c.y - center.y) <= colliderDistanceY  &&
+                              Mathf.Abs(c.z - center.z) <= colliderDistanceXZ;
+
+            chunk.CompleteGeneration(nearPlayer);
+            chunk.gameObject.SetActive(true);
+        }
+        pendingChunks.Clear();
+    }
+
+    // =================================================================
+    //  Object Pool
+    // =================================================================
+
+    /// <summary>
+    /// Pre-instantiate a batch of inactive chunk GameObjects so the first
+    /// loading pass doesn't need to call Instantiate for every chunk.
+    /// </summary>
+    private void WarmUpPool()
+    {
+        for (int i = 0; i < poolWarmupCount; i++)
+        {
+            TerrainChunk chunk = CreateChunkGameObject();
+            chunk.gameObject.SetActive(false);
+            chunkPool.Enqueue(chunk);
+        }
+
+        Debug.Log($"[TerrainManager] Pool warmed up with {poolWarmupCount} chunks.");
+    }
+
+    /// <summary>
+    /// Returns an idle TerrainChunk from the pool, or instantiates a
+    /// new one if the pool is empty.
+    /// </summary>
+    private TerrainChunk GetChunkFromPool()
+    {
+        if (chunkPool.Count > 0)
+            return chunkPool.Dequeue();
+
+        return CreateChunkGameObject();
+    }
+
+    /// <summary>
+    /// Deactivates a chunk, removes it from activeChunks, and pushes
+    /// it back into the pool for later reuse.
+    /// </summary>
+    private void ReturnChunkToPool(Vector3Int coord)
+    {
+        if (!activeChunks.TryGetValue(coord, out TerrainChunk chunk))
+            return;
+
+        activeChunks.Remove(coord);
+
+        // Null entries are empty-sky/solid markers — no pooled chunk to return
+        if (chunk == null) return;
+
+        chunk.gameObject.SetActive(false);
+        chunkPool.Enqueue(chunk);
+    }
+
+    /// <summary>
+    /// Low-level factory — creates the GameObject + TerrainChunk component.
+    /// Awake() on TerrainChunk handles all one-time allocations.
+    /// </summary>
+    private TerrainChunk CreateChunkGameObject()
+    {
+        GameObject go = new GameObject("PooledChunk");
+        go.transform.SetParent(transform, false);
         TerrainChunk chunk = go.AddComponent<TerrainChunk>();
-        chunk.Initialize(coord, terrainMaterial, noiseScale, amplitude, surfaceY);
-        chunks[coord] = chunk;
+        return chunk;
     }
 
     // =================================================================
@@ -77,7 +315,7 @@ public class TerrainManager : MonoBehaviour
     /// </summary>
     public TerrainChunk GetChunk(Vector3Int coord)
     {
-        chunks.TryGetValue(coord, out TerrainChunk chunk);
+        activeChunks.TryGetValue(coord, out TerrainChunk chunk);
         return chunk;
     }
 

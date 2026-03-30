@@ -8,6 +8,24 @@ using Terrain;
 /// Represents one chunk of the volumetric terrain.
 /// Owns a density field, schedules a Burst-compiled Marching Cubes job,
 /// and assigns the resulting mesh to its MeshFilter and MeshCollider.
+///
+/// POOL-FRIENDLY LIFECYCLE:
+///   Awake()              → allocates components, mesh, density array,
+///                          and persistent NativeArrays ONCE.
+///   BeginGeneration()    → fills density, copies to native, schedules the
+///                          Marching Cubes job without blocking.
+///   CompleteGeneration() → completes the job on a later frame, applies mesh.
+///   GenerateMesh()       → synchronous convenience (for TerrainEditor).
+///   OnDestroy()          → completes pending jobs, disposes all NativeArrays.
+///
+/// ASYNC PIPELINE:
+///   Frame N  : BeginGeneration() — schedules Burst job on worker threads.
+///   Frame N+1: CompleteGeneration() — extracts mesh, optionally bakes collider.
+///   This lets the Burst job run across the entire frame gap instead of
+///   blocking the main thread with handle.Complete().
+///
+/// Persistent NativeArrays (densities, vertices, vertexCounts) are allocated
+/// once in Awake() and reused every generation cycle — zero alloc per frame.
 /// </summary>
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(MeshCollider))]
 public class TerrainChunk : MonoBehaviour
@@ -35,6 +53,13 @@ public class TerrainChunk : MonoBehaviour
     private MeshCollider meshCollider;
     private Mesh         mesh;
 
+    // ── Persistent job I/O (allocated once in Awake, reused) ─────────
+    private NativeArray<float>  nativeDensities;
+    private NativeArray<float3> nativeVertices;
+    private NativeArray<int>    nativeVertCounts;
+    private JobHandle           pendingJobHandle;
+    private bool                hasPendingJob;
+
     // ── Shared look-up tables (allocated once, ref-counted) ──────────
     private static NativeArray<int> s_EdgeTable;
     private static NativeArray<int> s_TriTable;          // flattened 256×16
@@ -43,40 +68,37 @@ public class TerrainChunk : MonoBehaviour
     private static int s_RefCount;
 
     // =================================================================
-    //  Public API
+    //  Unity Lifecycle — one-time setup
     // =================================================================
 
     /// <summary>
-    /// Called by TerrainManager after instantiation.
-    /// Sets position, fills density, and generates the initial mesh.
+    /// Called exactly once per GameObject.
+    /// Allocates the density array, mesh, and caches components.
+    /// After this, Initialize() can be called any number of times
+    /// without triggering new allocations.
     /// </summary>
-    public void Initialize(Vector3Int coord, Material mat,
-                           float noiseScale, float amplitude, float surfaceY)
+    private void Awake()
     {
-        ChunkCoord      = coord;
-        this.noiseScale = noiseScale;
-        this.amplitude  = amplitude;
-        this.surfaceY   = surfaceY;
-
-        // Cache required components
         meshFilter   = GetComponent<MeshFilter>();
         meshRenderer = GetComponent<MeshRenderer>();
         meshCollider = GetComponent<MeshCollider>();
 
-        if (mat != null) meshRenderer.sharedMaterial = mat;
-
-        // Mesh setup (UInt32 to support >65 535 verts)
         mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
         meshFilter.sharedMesh = mesh;
 
-        // Ensure shared look-up tables exist
-        AllocateSharedTables();
-
-        // Build density → mesh
         densityField = new float[TotalPoints];
-        PopulateDensityField();
-        GenerateMesh();
+
+        int maxVerts = TotalVoxels * 15;
+        nativeDensities  = new NativeArray<float>(TotalPoints, Allocator.Persistent);
+        nativeVertices   = new NativeArray<float3>(maxVerts, Allocator.Persistent);
+        nativeVertCounts = new NativeArray<int>(TotalVoxels, Allocator.Persistent);
+
+        AllocateSharedTables();
     }
+
+    // =================================================================
+    //  Public API
+    // =================================================================
 
     /// <summary>
     /// Returns the raw density array so callers (e.g. TerrainEditor,
@@ -110,41 +132,155 @@ public class TerrainChunk : MonoBehaviour
     }
 
     // =================================================================
-    //  Mesh generation (schedules the Burst job)
+    //  Async two-phase mesh generation
     // =================================================================
 
     /// <summary>
-    /// Runs the Marching Cubes job and rebuilds this chunk's mesh.
-    /// Call this whenever the density field has been edited.
+    /// PHASE 1 — Called by TerrainManager's loading coroutine.
+    /// Sets chunk params, then schedules a chained DensityJob → MCJob
+    /// pipeline that runs ENTIRELY on worker threads.
+    /// The main thread only records the schedule (microseconds) and returns.
+    /// Call <see cref="CompleteGeneration"/> on a later frame.
+    /// </summary>
+    public void BeginGeneration(Vector3Int coord, Material mat,
+                                float noiseScale, float amplitude, float surfaceY)
+    {
+        ForceCompletePendingJob();
+
+        ChunkCoord      = coord;
+        this.noiseScale = noiseScale;
+        this.amplitude  = amplitude;
+        this.surfaceY   = surfaceY;
+
+        if (mat != null) meshRenderer.sharedMaterial = mat;
+
+        transform.position = new Vector3(
+            coord.x * ChunkSize,
+            coord.y * ChunkSize,
+            coord.z * ChunkSize);
+
+        ScheduleDensityAndMCJobs();
+    }
+
+    /// <summary>
+    /// PHASE 2 — Completes the pending Burst job, compacts the output
+    /// into a Unity Mesh, and optionally bakes the MeshCollider.
+    /// </summary>
+    /// <param name="bakeCollider">
+    /// If false the MeshCollider is nulled out (saves a costly bake for
+    /// chunks far from the player that don't need physics).
+    /// </param>
+    public void CompleteGeneration(bool bakeCollider = true)
+    {
+        if (!hasPendingJob) return;
+
+        pendingJobHandle.Complete();
+        hasPendingJob = false;
+
+        // Sync native → managed so terrain editing reads correct data
+        nativeDensities.CopyTo(densityField);
+
+        ApplyMeshFromNativeArrays(bakeCollider);
+    }
+
+    // =================================================================
+    //  Synchronous mesh generation (for TerrainEditor edits)
+    // =================================================================
+
+    /// <summary>
+    /// Synchronous path: copies the managed density array into the
+    /// persistent NativeArray and immediately runs the MC job.
+    /// Use this after a density edit (TerrainEditor). Always bakes collider.
     /// </summary>
     public void GenerateMesh()
     {
-        int maxVerts = TotalVoxels * 15;  // worst case: 5 tris × 3 verts
+        ForceCompletePendingJob();
+        ScheduleMCJobOnly();
+        pendingJobHandle.Complete();
+        hasPendingJob = false;
+        ApplyMeshFromNativeArrays(true);
+    }
 
-        // ── Allocate temp job arrays ─────────────────────────────────
-        var nativeDensities   = new NativeArray<float>(densityField, Allocator.TempJob);
-        var nativeVertices    = new NativeArray<float3>(maxVerts, Allocator.TempJob);
-        var nativeVertCounts  = new NativeArray<int>(TotalVoxels, Allocator.TempJob);
+    // =================================================================
+    //  Internal helpers
+    // =================================================================
 
-        // ── Configure and schedule ───────────────────────────────────
-        var job = new MarchingCubesJob
+    /// <summary>
+    /// Schedules DensityJob → MarchingCubesJob as a chained dependency.
+    /// Both run entirely on worker threads. Used by BeginGeneration().
+    /// </summary>
+    private void ScheduleDensityAndMCJobs()
+    {
+        float3 worldOff = new float3(
+            ChunkCoord.x * ChunkSize,
+            ChunkCoord.y * ChunkSize,
+            ChunkCoord.z * ChunkSize);
+
+        var densityJob = new DensityJob
         {
-            chunkSize           = ChunkSize,
-            numPointsPerAxis    = NumPointsPerAxis,
-            isoLevel            = IsoLevel,
-            densities           = nativeDensities,
-            edgeTable           = s_EdgeTable,
-            triTable            = s_TriTable,
-            cornerIndexAFromEdge = s_CornerIndexA,
-            cornerIndexBFromEdge = s_CornerIndexB,
-            vertices            = nativeVertices,
-            vertexCountPerVoxel = nativeVertCounts
+            numPointsPerAxis = NumPointsPerAxis,
+            worldOffset      = worldOff,
+            noiseScale       = noiseScale,
+            amplitude        = amplitude,
+            surfaceY         = surfaceY,
+            densities        = nativeDensities
         };
 
-        JobHandle handle = job.Schedule(TotalVoxels, 64);
-        handle.Complete();
+        JobHandle densityHandle = densityJob.Schedule(TotalPoints, 64);
 
-        // ── Compact job output into managed arrays ───────────────────
+        var mcJob = new MarchingCubesJob
+        {
+            chunkSize            = ChunkSize,
+            numPointsPerAxis     = NumPointsPerAxis,
+            isoLevel             = IsoLevel,
+            densities            = nativeDensities,
+            edgeTable            = s_EdgeTable,
+            triTable             = s_TriTable,
+            cornerIndexAFromEdge = s_CornerIndexA,
+            cornerIndexBFromEdge = s_CornerIndexB,
+            vertices             = nativeVertices,
+            vertexCountPerVoxel  = nativeVertCounts
+        };
+
+        // MC job depends on density — won't start until density finishes
+        pendingJobHandle = mcJob.Schedule(TotalVoxels, 64, densityHandle);
+        hasPendingJob = true;
+    }
+
+    /// <summary>
+    /// Copies managed density[] → native, then schedules only the MC job.
+    /// Used by GenerateMesh() after terrain edits (density already modified
+    /// in the managed array by TerrainEditor).
+    /// </summary>
+    private void ScheduleMCJobOnly()
+    {
+        nativeDensities.CopyFrom(densityField);
+
+        var mcJob = new MarchingCubesJob
+        {
+            chunkSize            = ChunkSize,
+            numPointsPerAxis     = NumPointsPerAxis,
+            isoLevel             = IsoLevel,
+            densities            = nativeDensities,
+            edgeTable            = s_EdgeTable,
+            triTable             = s_TriTable,
+            cornerIndexAFromEdge = s_CornerIndexA,
+            cornerIndexBFromEdge = s_CornerIndexB,
+            vertices             = nativeVertices,
+            vertexCountPerVoxel  = nativeVertCounts
+        };
+
+        pendingJobHandle = mcJob.Schedule(TotalVoxels, 64);
+        hasPendingJob = true;
+    }
+
+    /// <summary>
+    /// Reads the completed job output from the persistent NativeArrays,
+    /// compacts it into a Unity Mesh, and optionally assigns the collider.
+    /// Must only be called after the job handle has been completed.
+    /// </summary>
+    private void ApplyMeshFromNativeArrays(bool bakeCollider)
+    {
         int totalVerts = 0;
         for (int i = 0; i < TotalVoxels; i++)
             totalVerts += nativeVertCounts[i];
@@ -166,57 +302,27 @@ public class TerrainChunk : MonoBehaviour
             }
         }
 
-        // ── Dispose temporaries ──────────────────────────────────────
-        nativeDensities.Dispose();
-        nativeVertices.Dispose();
-        nativeVertCounts.Dispose();
-
-        // ── Apply to Unity mesh ──────────────────────────────────────
         mesh.Clear();
         mesh.vertices  = meshVerts;
         mesh.triangles = meshTris;
         mesh.RecalculateNormals();
         mesh.RecalculateBounds();
 
-        // Force-rebake the physics collider
         meshCollider.sharedMesh = null;
-        meshCollider.sharedMesh = mesh;
+        if (bakeCollider && totalVerts > 0)
+            meshCollider.sharedMesh = mesh;
     }
 
-    // =================================================================
-    //  Density field initialisation (3-D simplex noise)
-    // =================================================================
-
-    private void PopulateDensityField()
+    /// <summary>
+    /// Safety net: if a job is still in flight (e.g. the chunk is being
+    /// recycled or destroyed before the coroutine could complete it),
+    /// force-complete it now so the NativeArrays are safe to reuse.
+    /// </summary>
+    private void ForceCompletePendingJob()
     {
-        Vector3 worldOffset = new Vector3(
-            ChunkCoord.x * ChunkSize,
-            ChunkCoord.y * ChunkSize,
-            ChunkCoord.z * ChunkSize);
-
-        int npa = NumPointsPerAxis;
-
-        for (int z = 0; z < npa; z++)
-        {
-            for (int y = 0; y < npa; y++)
-            {
-                for (int x = 0; x < npa; x++)
-                {
-                    float wx = x + worldOffset.x;
-                    float wy = y + worldOffset.y;
-                    float wz = z + worldOffset.z;
-
-                    // Base gradient: solid below surfaceY, air above
-                    float density = surfaceY - wy;
-
-                    // 3-D simplex noise for organic variation
-                    float3 np = new float3(wx, wy, wz) * noiseScale;
-                    density += noise.snoise(np) * amplitude;
-
-                    densityField[FlatIndex(x, y, z)] = density;
-                }
-            }
-        }
+        if (!hasPendingJob) return;
+        pendingJobHandle.Complete();
+        hasPendingJob = false;
     }
 
     // =================================================================
@@ -259,6 +365,12 @@ public class TerrainChunk : MonoBehaviour
 
     private void OnDestroy()
     {
+        ForceCompletePendingJob();
+
+        if (nativeDensities.IsCreated)  nativeDensities.Dispose();
+        if (nativeVertices.IsCreated)   nativeVertices.Dispose();
+        if (nativeVertCounts.IsCreated) nativeVertCounts.Dispose();
+
         ReleaseSharedTables();
         if (mesh != null) Destroy(mesh);
     }
