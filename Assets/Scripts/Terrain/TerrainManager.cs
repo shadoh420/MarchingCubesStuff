@@ -57,7 +57,7 @@ public class TerrainManager : MonoBehaviour
     [Header("LOD Distance (chunks)")]
     [Tooltip("Chunks within this Chebyshev radius use LOD0 (step=1, full resolution).")]
     public int lod0DistanceXZ = 2;
-    [Tooltip("Chunks within this radius use LOD1 (step=2, half resolution). Beyond this uses LOD2 (step=4).")]
+    [Tooltip("Chunks within this radius use LOD1 (step=2, half resolution). Beyond this uses LOD2 (step=4). Only applies beyond collider distance.")]
     public int lod1DistanceXZ = 4;
 
     // ── Visuals ──────────────────────────────────────────────────────
@@ -110,6 +110,18 @@ public class TerrainManager : MonoBehaviour
             player = transform;
         }
 
+        // Safety: collider distance must cover the full view distance so
+        // every visible chunk is walkable.  Clamp up if misconfigured.
+        if (colliderDistanceXZ < viewDistanceXZ)
+        {
+            Debug.LogWarning($"[TerrainManager] colliderDistanceXZ ({colliderDistanceXZ}) " +
+                             $"< viewDistanceXZ ({viewDistanceXZ}). Clamping up to avoid " +
+                             "visible terrain with no colliders.");
+            colliderDistanceXZ = viewDistanceXZ;
+        }
+        if (colliderDistanceY < viewDistanceY)
+            colliderDistanceY = viewDistanceY;
+
         cachedDistanceComparer = CompareByDistance;
 
         WarmUpPool();
@@ -161,6 +173,12 @@ public class TerrainManager : MonoBehaviour
     /// </summary>
     private IEnumerator LoadTerrain(Vector3Int center, int generation)
     {
+        // ── Safety: complete any in-flight work from a cancelled coroutine ──
+        // Without this, chunks that had physics bakes scheduled but never
+        // completed would end up visible but with NO collider.
+        CompletePendingBakes();
+        CompletePendingBatchOrphan();
+
         // ── Phase 1: Unload far-away chunks (batched) ────────────────
         coordsToRemove.Clear();
 
@@ -305,17 +323,55 @@ public class TerrainManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Returns the LOD vertex step for a chunk based on its Chebyshev
-    /// (max-axis) horizontal distance from the load center.
+    /// Completes any orphaned chunks that had BeginGeneration() called
+    /// but were never completed due to a soft-cancel (generation mismatch).
+    /// Without this, the chunks stay in activeChunks with no mesh and no collider.
+    /// </summary>
+    private void CompletePendingBatchOrphan()
+    {
+        if (pendingChunks.Count == 0) return;
+
+        for (int i = 0; i < pendingChunks.Count; i++)
+        {
+            TerrainChunk chunk = pendingChunks[i];
+            if (chunk == null) continue;
+
+            Vector3Int c = chunk.ChunkCoord;
+            bool nearPlayer = Mathf.Abs(c.x - lastLoadCenter.x) <= colliderDistanceXZ &&
+                              Mathf.Abs(c.y - lastLoadCenter.y) <= colliderDistanceY  &&
+                              Mathf.Abs(c.z - lastLoadCenter.z) <= colliderDistanceXZ;
+
+            chunk.CompleteGeneration(nearPlayer);
+            chunk.gameObject.SetActive(true);
+
+            if (nearPlayer)
+                pendingBakeChunks.Add(chunk);
+        }
+        pendingChunks.Clear();
+    }
+
+    /// <summary>
+    /// Returns the LOD vertex step for a chunk based on its distance
+    /// from the load center.  All chunks within collider distance are
+    /// forced to LOD0 (step=1) so that neighbouring full-resolution
+    /// meshes share identical edge vertices — eliminating the physical
+    /// gaps that let the player fall through LOD-boundary seams.
+    /// LOD1/LOD2 only apply to visual-only chunks beyond collider range.
     /// </summary>
     private int GetLodStep(Vector3Int coord, Vector3Int center)
     {
         int dx = Mathf.Abs(coord.x - center.x);
+        int dy = Mathf.Abs(coord.y - center.y);
         int dz = Mathf.Abs(coord.z - center.z);
-        int dist = Mathf.Max(dx, dz);
 
-        if (dist <= lod0DistanceXZ) return 1;
-        if (dist <= lod1DistanceXZ) return 2;
+        // Force LOD0 for every chunk that will receive a collider.
+        // This guarantees matching vertices at chunk borders so the
+        // player cannot fall through LOD-boundary gaps.
+        if (dx <= colliderDistanceXZ && dy <= colliderDistanceY && dz <= colliderDistanceXZ)
+            return 1;
+
+        int distXZ = Mathf.Max(dx, dz);
+        if (distXZ <= lod1DistanceXZ) return 2;
         return 4;
     }
 
@@ -418,6 +474,39 @@ public class TerrainManager : MonoBehaviour
     }
 
     /// <summary>
+    /// Synchronously generates a single chunk at the given coordinate.
+    /// Used by <see cref="PlayerSpawnManager"/> to guarantee colliders
+    /// exist before the player is placed.  Uses LOD0 (step=1) and
+    /// always bakes a MeshCollider.
+    /// </summary>
+    public void GenerateChunkImmediate(Vector3Int coord)
+    {
+        // Skip if already active
+        if (activeChunks.ContainsKey(coord)) return;
+
+        // Skip empty-sky chunks
+        float chunkWorldYMin = coord.y * TerrainChunk.ChunkSize;
+        float chunkWorldYMax = chunkWorldYMin + TerrainChunk.ChunkSize;
+        if (chunkWorldYMin > surfaceY + amplitude ||
+            chunkWorldYMax < surfaceY - amplitude)
+        {
+            activeChunks[coord] = null;
+            return;
+        }
+
+        TerrainChunk chunk = GetChunkFromPool();
+        chunk.gameObject.name = $"Chunk_{coord.x}_{coord.y}_{coord.z}";
+
+        // Full-resolution synchronous generation
+        chunk.BeginGeneration(coord, terrainMaterial, noiseScale, amplitude, surfaceY, 1);
+        chunk.CompleteGeneration(true);          // mesh + schedule bake
+        chunk.CompletePhysicsBake();             // finish bake immediately
+        chunk.gameObject.SetActive(true);
+
+        activeChunks[coord] = chunk;
+    }
+
+    /// <summary>
     /// Modifies density in a sphere around <paramref name="worldCenter"/>.
     /// Positive <paramref name="delta"/> subtracts density (dig / remove material).
     /// Negative <paramref name="delta"/> adds density (build / fill material).
@@ -446,6 +535,10 @@ public class TerrainManager : MonoBehaviour
             Vector3Int coord = new Vector3Int(cx, cy, cz);
             TerrainChunk chunk = GetChunk(coord);
             if (chunk == null) continue;
+
+            // Guarantee the managed density array has valid LOD0 data
+            // before we modify it.  No-op for chunks already at LOD0.
+            chunk.EnsureFullResolutionDensity();
 
             if (EditChunkDensity(chunk, worldCenter, radius, delta))
                 dirty.Add(chunk);

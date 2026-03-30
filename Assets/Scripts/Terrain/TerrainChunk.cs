@@ -70,6 +70,16 @@ public class TerrainChunk : MonoBehaviour
     private JobHandle pendingBakeHandle;
     private bool      hasPendingBake;
 
+    // ── Density field validity ──────────────────────────────────────
+    /// <summary>
+    /// True when the managed densityField[] contains valid full-resolution
+    /// (LOD0) data.  LOD1/LOD2 chunks only fill the NativeArray at reduced
+    /// resolution, leaving the managed array stale.  Any code that reads or
+    /// writes densityField (e.g. terrain editing) must call
+    /// <see cref="EnsureFullResolutionDensity"/> first.
+    /// </summary>
+    private bool _densityFieldPopulated;
+
     // ── Shared look-up tables (allocated once, ref-counted) ──────────
     private static NativeArray<int> s_EdgeTable;
     private static NativeArray<int> s_TriTable;          // flattened 256×16
@@ -163,6 +173,10 @@ public class TerrainChunk : MonoBehaviour
         this.amplitude  = amplitude;
         this.surfaceY   = surfaceY;
 
+        // Mark density as stale — will be set true in CompleteGeneration
+        // only for LOD0, or by EnsureFullResolutionDensity on demand.
+        _densityFieldPopulated = false;
+
         // Compute LOD-derived sizes (arrays stay at max LOD0 capacity)
         currentLodStep   = lodStep;
         lodVoxelsPerAxis = ChunkSize / lodStep;
@@ -194,9 +208,14 @@ public class TerrainChunk : MonoBehaviour
         pendingJobHandle.Complete();
         hasPendingJob = false;
 
-        // Only sync density back for LOD0 — editing only affects nearby full-res chunks
+        // Sync density back for LOD0 so the managed array is ready for
+        // terrain edits.  LOD1/LOD2 use fewer samples so we cannot copy
+        // directly — EnsureFullResolutionDensity() handles that on demand.
         if (currentLodStep == 1)
+        {
             nativeDensities.CopyTo(densityField);
+            _densityFieldPopulated = true;
+        }
 
         int vertCount = ApplyMeshFromNativeArrays();
 
@@ -230,6 +249,47 @@ public class TerrainChunk : MonoBehaviour
     }
 
     // =================================================================
+    //  Density field guarantee
+    // =================================================================
+
+    /// <summary>
+    /// Guarantees that the managed <c>densityField[]</c> contains valid
+    /// full-resolution (LOD0) density data.  If the chunk was loaded at
+    /// LOD1/LOD2 the managed array is still all-zeros; this method
+    /// synchronously runs a DensityJob at step=1 to populate it.
+    ///
+    /// Call this before any code that reads or writes <c>densityField</c>
+    /// (e.g. <see cref="TerrainManager.EditTerrain"/>).
+    /// No-op if density is already valid.
+    /// </summary>
+    public void EnsureFullResolutionDensity()
+    {
+        if (_densityFieldPopulated) return;
+
+        int fullPoints = NumPointsPerAxis * NumPointsPerAxis * NumPointsPerAxis;
+
+        float3 worldOff = new float3(
+            ChunkCoord.x * ChunkSize,
+            ChunkCoord.y * ChunkSize,
+            ChunkCoord.z * ChunkSize);
+
+        var densityJob = new DensityJob
+        {
+            numPointsPerAxis = NumPointsPerAxis,
+            worldOffset      = worldOff,
+            vertexStep       = 1,
+            noiseScale       = noiseScale,
+            amplitude        = amplitude,
+            surfaceY         = surfaceY,
+            densities        = nativeDensities
+        };
+
+        densityJob.Schedule(fullPoints, 64).Complete();
+        nativeDensities.CopyTo(densityField);
+        _densityFieldPopulated = true;
+    }
+
+    // =================================================================
     //  Synchronous mesh generation (for TerrainEditor edits)
     // =================================================================
 
@@ -241,6 +301,10 @@ public class TerrainChunk : MonoBehaviour
     public void GenerateMesh()
     {
         ForceCompletePendingJob();
+
+        // Safety: if this chunk was loaded at LOD1/LOD2, its managed
+        // densityField is stale. Regenerate it at full resolution first.
+        EnsureFullResolutionDensity();
 
         // Sync path always uses full LOD0 resolution
         currentLodStep   = 1;
